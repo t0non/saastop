@@ -81,7 +81,7 @@ export default function InboxPage() {
 
         // Also fetch connection state from status endpoint
         if (!append) {
-          const statusRes = await fetch("/api/whatsapp/status");
+          const statusRes = await fetch("/api/whatsapp/connection/status");
           if (statusRes.ok) {
             const statusData = await statusRes.json();
             setWhatsappStatus(statusData.status || "disconnected");

@@ -15,7 +15,7 @@ interface ConnectionInfo {
   base_url: string;
   instance_name: string;
   owner_phone: string;
-  status: "not_configured" | "creating_instance" | "waiting_qr" | "waiting_pair_code" | "connecting" | "connected" | "disconnected" | "error";
+  status: "not_configured" | "creating_instance" | "waiting_qr" | "waiting_pair_code" | "connecting" | "connected" | "disconnected" | "error" | "hibernated";
   connected_at?: string;
   last_health_check_at?: string;
 }
@@ -59,7 +59,7 @@ export default function WhatsAppIntegrationPage() {
   const fetchConnection = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/whatsapp/connection");
+      const res = await fetch("/api/whatsapp/connection/status");
       if (res.ok) {
         const data = await res.json();
         setConn(data);
@@ -212,11 +212,11 @@ export default function WhatsAppIntegrationPage() {
     }
   };
 
-  // Consulta nosso endpoint interno GET /api/whatsapp/status
+  // Consulta nosso endpoint interno GET /api/whatsapp/connection/status
   // Aplica QR Code e Pair Code ao estado quando disponíveis via polling
   const fetchStatus = async (): Promise<string> => {
     try {
-      const res = await fetch("/api/whatsapp/status");
+      const res = await fetch("/api/whatsapp/connection/status");
       const data = await res.json();
 
       if (data.status === "connected") {
@@ -469,29 +469,44 @@ export default function WhatsAppIntegrationPage() {
             </div>
             
             {/* Status indicator badge */}
-            <span className={`px-3 py-1 rounded-full text-xs font-bold leading-none select-none uppercase ${
-              conn.status === "connected" 
-                ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
-                : (conn.status === "waiting_qr" || conn.status === "waiting_pair_code")
-                ? "bg-amber-50 text-amber-700 border border-amber-100"
-                : conn.status === "connecting"
-                ? "bg-blue-50 text-blue-700 border border-blue-100"
-                : "bg-slate-100 text-slate-600 border border-slate-200"
-            }`}>
-              {conn.status === "connected" 
-                ? "Conectado" 
-                : conn.status === "waiting_qr" 
-                ? "Aguardando QR Code" 
-                : conn.status === "waiting_pair_code"
-                ? "Aguardando Código"
-                : conn.status === "connecting"
-                ? "Conectando..."
-                : "Desconectado"}
-            </span>
+            {loading ? (
+              <span className="px-3 py-1 rounded-full text-xs font-bold leading-none select-none uppercase bg-slate-100 text-slate-500 border border-slate-200 animate-pulse">
+                Verificando WhatsApp...
+              </span>
+            ) : (
+              <span className={`px-3 py-1 rounded-full text-xs font-bold leading-none select-none uppercase ${
+                conn.status === "connected" 
+                  ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
+                  : (conn.status === "waiting_qr" || conn.status === "waiting_pair_code")
+                  ? "bg-amber-50 text-amber-700 border border-amber-100"
+                  : conn.status === "connecting"
+                  ? "bg-blue-50 text-blue-700 border border-blue-100"
+                  : conn.status === "hibernated"
+                  ? "bg-purple-50 text-purple-700 border border-purple-100"
+                  : "bg-slate-100 text-slate-600 border border-slate-200"
+              }`}>
+                {conn.status === "connected" 
+                  ? "WhatsApp Conectado" 
+                  : conn.status === "waiting_qr" 
+                  ? "Aguardando QR Code" 
+                  : conn.status === "waiting_pair_code"
+                  ? "Aguardando Código"
+                  : conn.status === "connecting"
+                  ? "Conectando..."
+                  : conn.status === "hibernated"
+                  ? "Sessão Pausada"
+                  : "Reconectar WhatsApp"}
+              </span>
+            )}
           </div>
 
           <div className="mt-6 border-t border-slate-100 pt-6 space-y-4">
-            {conn.status === "connected" ? (
+            {loading ? (
+              <div className="space-y-4 animate-pulse">
+                <div className="h-4 bg-slate-100 rounded w-3/4"></div>
+                <div className="h-4 bg-slate-100 rounded w-1/2"></div>
+              </div>
+            ) : conn.status === "connected" ? (
               <div className="space-y-4 text-sm text-slate-700">
                 <div className="grid grid-cols-2 gap-4">
                   <div>

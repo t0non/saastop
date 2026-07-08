@@ -5,7 +5,6 @@ import { normalizeUazapiInstanceStatus } from "@/integrations/uazapi/normalizers
 
 export async function GET(request: NextRequest) {
   try {
-    // 1. Authenticate user
     const supabase = await getServerClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
@@ -15,7 +14,6 @@ export async function GET(request: NextRequest) {
 
     const orgId = user.user_metadata?.organization_id || user.app_metadata?.organization_id || "empresa-1";
 
-    // 2. Query active connection from DB
     const { data: connection, error: connError } = await supabase
       .from("whatsapp_connections")
       .select("*")
@@ -31,17 +29,26 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ status: "not_configured" });
     }
 
-    // 3. Fallback for simulations / mock token
+    console.log(`[WA_STATUS_CONNECTION_FOUND]`, {
+      connectionId: connection.id,
+      organizationId: orgId,
+      baseUrl: connection.base_url,
+      instanceName: connection.instance_name,
+      localStatus: connection.status
+    });
+
     const isMockToken = connection.instance_token?.startsWith("token-gen-") || process.env.NEXT_PUBLIC_ENABLE_MOCK_DATA === "true";
     if (isMockToken) {
       const isConnectedSim = connection.status === "connected";
       return NextResponse.json({
         status: connection.status || "waiting_qr",
+        connected: isConnectedSim,
         instanceName: connection.instance_name || "WhatsApp Simulador",
         phone: connection.owner_phone || "5531999999999",
+        hasQrCode: connection.status === "waiting_qr",
+        hasPairCode: connection.status === "waiting_pair_code",
         qrImageSrc: connection.status === "waiting_qr" ? "data:image/png;base64,iVBORw0KGgoAAA..." : null,
-        pairCode: connection.status === "waiting_pair_code" ? "WXYZ-1234" : null,
-        connected: isConnectedSim,
+        pairCode: connection.status === "waiting_pair_code" ? "WXYZ-1234" : null
       });
     }
 
@@ -52,24 +59,40 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Connection token missing" }, { status: 400 });
     }
 
-    // 4. Fetch status from UAZAPI and normalize
+    console.log(`[WA_STATUS_REQUEST]`, { url: `${baseUrl}/instance/status` });
+
     try {
       const raw = await getInstanceStatus(baseUrl, instanceToken);
       const normalized = normalizeUazapiInstanceStatus(raw);
 
-      // 5. Update connection status in DB if needed
+      console.log(`[WA_STATUS_RESPONSE]`, {
+        instanceName: normalized.instanceName,
+        status: normalized.status,
+        connected: normalized.connected,
+        phone: normalized.phone
+      });
+
+      if (normalized.instanceName && connection.instance_name) {
+        if (normalized.instanceName !== connection.instance_name) {
+           console.warn(`[WA_INSTANCE_MISMATCH]`, {
+              saved: connection.instance_name,
+              received: normalized.instanceName
+           });
+        }
+      }
+
       const isConnected = normalized.connected;
       let statusToSave = normalized.status;
-      
-      // If UAZAPI says connected, update DB to connected and connected_at
-      // Otherwise maintain the state waiting_qr or waiting_pair_code unless UAZAPI explicitly shows disconnected/connecting
+
       if (isConnected) {
         statusToSave = "connected";
-      } else if (normalized.status === "disconnected") {
-        // If UAZAPI is disconnected but database is in waiting QR state, we can keep it as waiting_qr/waiting_pair_code
-        // unless it's a hard disconnect
+      } else if (statusToSave === "disconnected" || statusToSave === "hibernated" || statusToSave === "connecting") {
+         // status from normalized
+      } else {
         if (connection.status === "waiting_qr" || connection.status === "waiting_pair_code") {
           statusToSave = connection.status;
+        } else {
+           statusToSave = "disconnected";
         }
       }
 
@@ -91,25 +114,48 @@ export async function GET(request: NextRequest) {
         .update(updates)
         .eq("id", connection.id);
 
+      console.log(`[WA_STATUS_SYNCED]`, {
+        connectionId: connection.id,
+        savedStatus: statusToSave
+      });
+
+      console.log(`[WA_STATUS_FRONTEND_UPDATED]`, {
+         status: statusToSave,
+         connected: isConnected,
+         instanceName: normalized.instanceName || connection.instance_name,
+         phone: normalized.phone || connection.owner_phone,
+         hasQrCode: !!normalized.qrImageSrc,
+         hasPairCode: !!normalized.pairCode
+      });
+
       return NextResponse.json({
         status: statusToSave,
+        connected: isConnected,
         instanceName: normalized.instanceName || connection.instance_name,
         phone: normalized.phone || connection.owner_phone,
+        hasQrCode: !!normalized.qrImageSrc,
+        hasPairCode: !!normalized.pairCode,
         qrImageSrc: normalized.qrImageSrc,
         pairCode: normalized.pairCode,
-        connected: isConnected,
+        connection_name: connection.connection_name || connection.instance_name || "WhatsApp Principal",
+        base_url: connection.base_url || "https://free.uazapi.com",
+        connected_at: connection.connected_at,
+        last_health_check_at: updates.last_health_check_at,
       });
     } catch (apiErr) {
       console.warn("[STATUS_ROUTE] Provider status lookup failed:", apiErr);
-      // Return local connection status as fallback
       return NextResponse.json({
         status: connection.status,
+        connected: connection.status === "connected",
         instanceName: connection.instance_name,
         phone: connection.owner_phone,
-        qrImageSrc: null,
-        pairCode: null,
-        connected: connection.status === "connected",
-        providerError: true
+        hasQrCode: false,
+        hasPairCode: false,
+        providerError: true,
+        connection_name: connection.connection_name || connection.instance_name || "WhatsApp Principal",
+        base_url: connection.base_url || "https://free.uazapi.com",
+        connected_at: connection.connected_at,
+        last_health_check_at: connection.last_health_check_at,
       });
     }
   } catch (err) {
