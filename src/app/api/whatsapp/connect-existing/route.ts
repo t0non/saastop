@@ -30,7 +30,20 @@ function normalizeUazapiStatusResponse(raw: unknown): NormalizedStatus {
   const data = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const instance = (data.instance && typeof data.instance === "object" ? data.instance : {}) as Record<string, unknown>;
   const status = (data.status && typeof data.status === "object" ? data.status : {}) as Record<string, unknown>;
-  const jid = (status.jid && typeof status.jid === "object" ? status.jid : {}) as Record<string, unknown>;
+
+  let phone: string | null = null;
+  if (typeof status.jid === "string") {
+    phone = status.jid.split(":")[0].split("@")[0];
+  } else if (status.jid && typeof status.jid === "object") {
+    const jidObj = status.jid as Record<string, unknown>;
+    if (typeof jidObj.user === "string") {
+      phone = jidObj.user;
+    }
+  }
+
+  if (!phone && typeof instance.owner === "string") {
+    phone = instance.owner;
+  }
 
   return {
     instanceName: typeof instance.name === "string" ? instance.name : null,
@@ -39,7 +52,7 @@ function normalizeUazapiStatusResponse(raw: unknown): NormalizedStatus {
     pairCode: typeof instance.paircode === "string" ? instance.paircode : null,
     connected: typeof status.connected === "boolean" ? status.connected : false,
     loggedIn: typeof status.loggedIn === "boolean" ? status.loggedIn : false,
-    phone: typeof jid.user === "string" ? jid.user : null
+    phone
   };
 }
 
