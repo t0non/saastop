@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { UazapiWebhookSchema } from "../../../../integrations/uazapi/schemas";
+import { sanitizeUazapiPayload } from "../../../../integrations/uazapi/sanitize-payload";
+import { normalizeUazapiMessage } from "../../../../integrations/uazapi/normalize-message";
+import { processIncomingMessage } from "../../../../services/whatsapp/process-incoming-message";
 
 export async function GET() {
   return NextResponse.json({
@@ -9,30 +13,35 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    let payload: Record<string, unknown>;
+    let rawPayload: Record<string, unknown>;
     try {
-      payload = await request.json() as Record<string, unknown>;
+      rawPayload = await request.json() as Record<string, unknown>;
     } catch {
       console.error("[UAZAPI Webhook] Invalid JSON payload received");
       return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
     }
 
-    if (!payload || typeof payload !== "object" || Object.keys(payload).length === 0) {
-      console.warn("[UAZAPI Webhook] Empty payload received");
-      return NextResponse.json({ error: "Empty payload" }, { status: 400 });
+    // 1. Sanitize payload for logging
+    const sanitized = sanitizeUazapiPayload(rawPayload);
+    console.log("[UAZAPI_WEBHOOK_PAYLOAD]", JSON.stringify(sanitized, null, 2));
+
+    // 2. Validate payload schema
+    const parseResult = UazapiWebhookSchema.safeParse(rawPayload);
+    if (!parseResult.success) {
+      console.warn("[UAZAPI Webhook] Payload validation failed:", parseResult.error.format());
+      return NextResponse.json({ error: "Invalid payload format" }, { status: 400 });
     }
 
-    // Log the full payload with the searchable prefix
-    console.log("[UAZAPI_WEBHOOK_PAYLOAD]", JSON.stringify(payload, null, 2));
+    const payload = parseResult.data;
 
-    // Extract and log specific fields if they exist at root or nested under 'data'
+    // 3. Extract specific diagnostic logs if present (for extra logging safety)
     const keysToCheck = ["event", "type", "chatid", "sender", "phone", "messageid", "text", "fromMe", "timestamp"];
     const extracted: Record<string, unknown> = {};
-    const dataVal = payload["data"];
+    const dataVal = rawPayload["data"];
 
     for (const key of keysToCheck) {
-      if (payload[key] !== undefined) {
-        extracted[key] = payload[key];
+      if (rawPayload[key] !== undefined) {
+        extracted[key] = rawPayload[key];
       } else if (
         dataVal &&
         typeof dataVal === "object" &&
@@ -44,6 +53,19 @@ export async function POST(request: NextRequest) {
 
     if (Object.keys(extracted).length > 0) {
       console.log("[UAZAPI_WEBHOOK_FIELDS]", JSON.stringify(extracted, null, 2));
+    }
+
+    // 4. Normalize message
+    const normalized = normalizeUazapiMessage(payload);
+
+    // 5. Process incoming message (auth, deduplicate, save contact/conv/msg/lead)
+    const result = await processIncomingMessage(normalized, payload.token);
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.reason }, 
+        { status: result.reason === "Unauthorized token" ? 401 : 400 }
+      );
     }
 
     return NextResponse.json({ ok: true });
