@@ -32,8 +32,9 @@ export default function WhatsAppIntegrationPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [connectMode, setConnectMode] = useState<"choice" | "existing" | "new">("choice");
   const [qrImageSrc, setQrImageSrc] = useState<string | null>(null);
-  const [qrStatus, setQrStatus] = useState<"preparing" | "waiting_qr" | "connected" | "error">("preparing");
+  const [qrStatus, setQrStatus] = useState<"preparing" | "waiting_qr" | "connecting" | "connected" | "error">("preparing");
   const [qrError, setQrError] = useState<string | null>(null);
+  const [pollingStartedAt, setPollingStartedAt] = useState<number>(0);
   const [qrPollingInterval, setQrPollingInterval] = useState<NodeJS.Timeout | null>(null);
 
   // Form states for existing connection
@@ -86,13 +87,13 @@ export default function WhatsAppIntegrationPage() {
       });
 
       const data = await res.json();
-      if (res.ok && data.success) {
+      if (res.ok && data.ok) {
         setTestResult({ 
           success: true, 
-          msg: `Conexão válida. Número conectado: ${data.connection.owner_phone || "Não identificado"}` 
+          msg: `Conexão válida. Número conectado: ${data.phone ? `+${data.phone}` : "Não identificado"}` 
         });
       } else {
-        setTestResult({ success: false, msg: data.error || "Não foi possível validar a conexão." });
+        setTestResult({ success: false, msg: data.message || data.error || "Não foi possível validar a conexão." });
       }
     } catch (err) {
       setTestResult({ success: false, msg: "Falha na comunicação com o servidor de validação." });
@@ -117,12 +118,15 @@ export default function WhatsAppIntegrationPage() {
         })
       });
 
-      if (res.ok) {
+      const data = await res.json();
+      if (res.ok && data.ok) {
         alert("Instância conectada e salva com sucesso!");
         setModalOpen(false);
         fetchConnection();
         // Force header reload by reloading page or updating context
         window.location.reload();
+      } else {
+        alert(data.message || data.error || "Erro ao salvar conexão.");
       }
     } catch (err) {
       alert("Erro ao salvar conexão.");
@@ -131,29 +135,38 @@ export default function WhatsAppIntegrationPage() {
     }
   };
 
-  // Busca o QR Code do backend e normaliza o resultado
-  const fetchQrCode = async () => {
+  // Consulta nosso endpoint interno GET /api/whatsapp/status
+  // que por sua vez chama GET {baseUrl}/instance/status (UAZAPI v2)
+  const fetchStatus = async (): Promise<string> => {
     try {
-      const qrRes = await fetch("/api/whatsapp/qr-code");
-      const qrData = await qrRes.json();
+      const res = await fetch("/api/whatsapp/status");
+      const data = await res.json();
 
-      if (qrData.status === "connected") {
+      if (data.status === "connected") {
         setQrStatus("connected");
         setQrImageSrc(null);
         return "connected";
       }
 
-      if (qrData.status === "error" || !qrData.qrImageSrc) {
-        setQrStatus("error");
-        setQrError(qrData.error || "Não foi possível carregar o QR Code.");
-        setQrImageSrc(null);
-        return "error";
+      if (data.status === "waiting_qr" && data.qrImageSrc) {
+        setQrStatus("waiting_qr");
+        setQrImageSrc(data.qrImageSrc);
+        setQrError(null);
+        return "waiting_qr";
       }
 
-      setQrStatus("waiting_qr");
-      setQrImageSrc(qrData.qrImageSrc);
-      setQrError(null);
-      return "waiting_qr";
+      if (data.status === "connecting") {
+        setQrStatus("connecting");
+        setQrImageSrc(null);
+        setQrError(null);
+        return "connecting";
+      }
+
+      // error ou qrImageSrc ausente
+      setQrStatus("error");
+      setQrError(data.message || "Não foi possível carregar o QR Code.");
+      setQrImageSrc(null);
+      return "error";
     } catch {
       setQrStatus("error");
       setQrError("Falha na comunicação com o servidor.");
@@ -162,28 +175,48 @@ export default function WhatsAppIntegrationPage() {
     }
   };
 
-  // Inicia polling para verificar status e renovar QR
-  const startQrPolling = () => {
+  // Inicia polling de /api/whatsapp/status a cada 3s, com timeout de 2 minutos
+  const startStatusPolling = () => {
     if (qrPollingInterval) clearInterval(qrPollingInterval);
+    const startTime = Date.now();
+    setPollingStartedAt(startTime);
+    const TIMEOUT_MS = 2 * 60 * 1000; // 2 minutos
 
     const interval = setInterval(async () => {
-      const result = await fetchQrCode();
+      // Timeout de 2 minutos
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        clearInterval(interval);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setQrPollingInterval(null);
+        setQrStatus("error");
+        setQrError("Tempo limite excedido. Tente novamente.");
+        return;
+      }
+
+      const result = await fetchStatus();
+
       if (result === "connected") {
         clearInterval(interval);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setQrPollingInterval(null);
-        // Aguarda 2s para mostrar estado de sucesso
+        // Mostra estado de sucesso por 2s antes de redirecionar
         setTimeout(() => {
           setModalOpen(false);
           fetchConnection();
           window.location.reload();
         }, 2000);
+      } else if (result === "error") {
+        clearInterval(interval);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setQrPollingInterval(null);
       }
-    }, 5000);
+    }, 3000);
 
     setQrPollingInterval(interval);
   };
 
-  // Create new connection workflow (admin token proxy)
+  // Cria nova conexão: chama POST /api/whatsapp/create-instance
+  // que internamente faz POST /instance/connect (UAZAPI v2)
   const handleCreateNewConnection = async () => {
     setLoading(true);
     setConnectMode("new");
@@ -193,12 +226,12 @@ export default function WhatsAppIntegrationPage() {
     try {
       const res = await fetch("/api/whatsapp/create-instance", { method: "POST" });
       const data = await res.json();
-      
+
       if (res.ok && data.success) {
-        // Fetch QR Code immediately
-        await fetchQrCode();
-        // Start polling
-        startQrPolling();
+        // Primeira consulta de status imediata
+        await fetchStatus();
+        // Inicia polling a cada 3s
+        startStatusPolling();
       } else {
         setQrStatus("error");
         setQrError(data.error || "Erro ao criar nova instância.");
@@ -211,13 +244,13 @@ export default function WhatsAppIntegrationPage() {
     }
   };
 
-  // Retry handler
+  // Retry: re-inicia conexão do zero
   const handleRetryQr = async () => {
     setQrStatus("preparing");
     setQrImageSrc(null);
     setQrError(null);
-    await fetchQrCode();
-    startQrPolling();
+    await fetchStatus();
+    startStatusPolling();
   };
 
   // Disconnect / Delete connection
@@ -492,6 +525,14 @@ export default function WhatsAppIntegrationPage() {
                         </div>
                       )}
 
+                      {/* ESTADO: Conectando (QR lido, finalizando) */}
+                      {qrStatus === "connecting" && (
+                        <div className="flex flex-col items-center justify-center space-y-3">
+                          <RefreshCw className="h-8 w-8 text-emerald-500 animate-spin" />
+                          <span className="text-sm text-slate-600 font-medium">QR Code lido. Finalizando conexão...</span>
+                        </div>
+                      )}
+
                       {/* ESTADO: Aguardando QR */}
                       {qrStatus === "waiting_qr" && qrImageSrc && (
                         <>
@@ -549,7 +590,7 @@ export default function WhatsAppIntegrationPage() {
                     </div>
 
                     {/* Instruções — só mostra quando aguardando QR */}
-                    {(qrStatus === "waiting_qr" || qrStatus === "preparing") && (
+                    {(qrStatus === "waiting_qr" || qrStatus === "preparing" || qrStatus === "connecting") && (
                       <div className="text-left text-xs text-slate-500 bg-slate-50/50 p-4 rounded-xl space-y-2 border border-slate-100">
                         <span className="font-bold text-slate-700 block">Como parear no celular:</span>
                         <ol className="list-decimal pl-4 space-y-1">
