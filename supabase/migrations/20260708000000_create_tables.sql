@@ -87,4 +87,10 @@ CREATE TABLE IF NOT EXISTS leads (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- Enable RLS and create policies if needed, but for simplicity in the pilot, we can skip or allow all public access for local/api integrations.
+-- Disable Row Level Security (RLS) for pilot simplicity
+ALTER TABLE organizations DISABLE ROW LEVEL SECURITY;
+ALTER TABLE whatsapp_connections DISABLE ROW LEVEL SECURITY;
+ALTER TABLE contacts DISABLE ROW LEVEL SECURITY;
+ALTER TABLE conversations DISABLE ROW LEVEL SECURITY;
+ALTER TABLE messages DISABLE ROW LEVEL SECURITY;
+ALTER TABLE leads DISABLE ROW LEVEL SECURITY;
