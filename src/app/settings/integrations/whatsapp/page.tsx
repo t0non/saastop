@@ -31,7 +31,9 @@ export default function WhatsAppIntegrationPage() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [connectMode, setConnectMode] = useState<"choice" | "existing" | "new">("choice");
-  const [qrCode, setQrCode] = useState<string | null>(null);
+  const [qrImageSrc, setQrImageSrc] = useState<string | null>(null);
+  const [qrStatus, setQrStatus] = useState<"preparing" | "waiting_qr" | "connected" | "error">("preparing");
+  const [qrError, setQrError] = useState<string | null>(null);
   const [qrPollingInterval, setQrPollingInterval] = useState<NodeJS.Timeout | null>(null);
 
   // Form states for existing connection
@@ -129,49 +131,93 @@ export default function WhatsAppIntegrationPage() {
     }
   };
 
+  // Busca o QR Code do backend e normaliza o resultado
+  const fetchQrCode = async () => {
+    try {
+      const qrRes = await fetch("/api/whatsapp/qr-code");
+      const qrData = await qrRes.json();
+
+      if (qrData.status === "connected") {
+        setQrStatus("connected");
+        setQrImageSrc(null);
+        return "connected";
+      }
+
+      if (qrData.status === "error" || !qrData.qrImageSrc) {
+        setQrStatus("error");
+        setQrError(qrData.error || "Não foi possível carregar o QR Code.");
+        setQrImageSrc(null);
+        return "error";
+      }
+
+      setQrStatus("waiting_qr");
+      setQrImageSrc(qrData.qrImageSrc);
+      setQrError(null);
+      return "waiting_qr";
+    } catch {
+      setQrStatus("error");
+      setQrError("Falha na comunicação com o servidor.");
+      setQrImageSrc(null);
+      return "error";
+    }
+  };
+
+  // Inicia polling para verificar status e renovar QR
+  const startQrPolling = () => {
+    if (qrPollingInterval) clearInterval(qrPollingInterval);
+
+    const interval = setInterval(async () => {
+      const result = await fetchQrCode();
+      if (result === "connected") {
+        clearInterval(interval);
+        setQrPollingInterval(null);
+        // Aguarda 2s para mostrar estado de sucesso
+        setTimeout(() => {
+          setModalOpen(false);
+          fetchConnection();
+          window.location.reload();
+        }, 2000);
+      }
+    }, 5000);
+
+    setQrPollingInterval(interval);
+  };
+
   // Create new connection workflow (admin token proxy)
   const handleCreateNewConnection = async () => {
     setLoading(true);
     setConnectMode("new");
+    setQrStatus("preparing");
+    setQrImageSrc(null);
+    setQrError(null);
     try {
       const res = await fetch("/api/whatsapp/create-instance", { method: "POST" });
       const data = await res.json();
       
       if (res.ok && data.success) {
         // Fetch QR Code immediately
-        const qrRes = await fetch("/api/whatsapp/qr-code");
-        const qrData = await qrRes.json();
-        if (qrData.qr) {
-          setQrCode(qrData.qr);
-        }
-
-        // Start polling connection status
-        const interval = setInterval(async () => {
-          const checkRes = await fetch("/api/whatsapp/connection");
-          if (checkRes.ok) {
-            const checkData = await checkRes.json();
-            if (checkData.status === "connected") {
-              clearInterval(interval);
-              setQrPollingInterval(null);
-              setModalOpen(false);
-              fetchConnection();
-              alert("WhatsApp conectado com sucesso!");
-              window.location.reload();
-            }
-          }
-        }, 3000);
-
-        setQrPollingInterval(interval);
+        await fetchQrCode();
+        // Start polling
+        startQrPolling();
       } else {
-        alert(data.error || "Erro ao criar nova instância.");
-        setConnectMode("choice");
+        setQrStatus("error");
+        setQrError(data.error || "Erro ao criar nova instância.");
       }
-    } catch (err) {
-      alert("Falha de conexão com a UAZAPI.");
-      setConnectMode("choice");
+    } catch {
+      setQrStatus("error");
+      setQrError("Falha de conexão com a UAZAPI.");
     } finally {
       setLoading(false);
     }
+  };
+
+  // Retry handler
+  const handleRetryQr = async () => {
+    setQrStatus("preparing");
+    setQrImageSrc(null);
+    setQrError(null);
+    await fetchQrCode();
+    startQrPolling();
   };
 
   // Disconnect / Delete connection
@@ -198,12 +244,21 @@ export default function WhatsAppIntegrationPage() {
     }
   };
 
-  // Stop polling on unmount
+  // Stop polling on unmount or modal close
   useEffect(() => {
     return () => {
       if (qrPollingInterval) clearInterval(qrPollingInterval);
     };
   }, [qrPollingInterval]);
+
+  // Stop polling when modal closes
+  useEffect(() => {
+    if (!modalOpen && qrPollingInterval) {
+      clearInterval(qrPollingInterval);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setQrPollingInterval(null);
+    }
+  }, [modalOpen, qrPollingInterval]);
 
   return (
     <Layout>
@@ -427,31 +482,84 @@ export default function WhatsAppIntegrationPage() {
                 {/* 3. Nova Conexão (QR Code) */}
                 {connectMode === "new" && (
                   <div className="space-y-6 text-center">
-                    <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col items-center justify-center min-h-[220px]">
-                      {qrCode ? (
+                    <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col items-center justify-center min-h-[260px]">
+
+                      {/* ESTADO: Preparando */}
+                      {qrStatus === "preparing" && (
+                        <div className="flex flex-col items-center justify-center space-y-3">
+                          <RefreshCw className="h-8 w-8 text-slate-400 animate-spin" />
+                          <span className="text-sm text-slate-500 font-medium">Preparando conexão...</span>
+                        </div>
+                      )}
+
+                      {/* ESTADO: Aguardando QR */}
+                      {qrStatus === "waiting_qr" && qrImageSrc && (
                         <>
                           <p className="text-xs text-slate-500 mb-4">Leia o QR Code com o WhatsApp do seu aparelho principal:</p>
                           <div className="bg-white p-3 border border-slate-200 rounded-lg shadow-sm">
-                            <img src={qrCode} alt="WhatsApp QR Code" className="w-44 h-44 object-contain" />
+                            <img
+                              src={qrImageSrc}
+                              alt="QR Code para conectar WhatsApp"
+                              width={220}
+                              height={220}
+                              className="object-contain"
+                            />
                           </div>
+                          <p className="text-[11px] text-slate-400 mt-3">O QR Code será renovado automaticamente.</p>
                         </>
-                      ) : (
-                        <div className="flex flex-col items-center justify-center space-y-3">
-                          <RefreshCw className="h-8 w-8 text-slate-400 animate-spin" />
-                          <span className="text-xs text-slate-500">Preparando conexão...</span>
+                      )}
+
+                      {/* ESTADO: Erro */}
+                      {qrStatus === "error" && (
+                        <div className="flex flex-col items-center justify-center space-y-4">
+                          <AlertCircle className="h-10 w-10 text-rose-400" />
+                          <div className="space-y-1">
+                            <p className="text-sm font-semibold text-slate-700">Não foi possível carregar o QR Code.</p>
+                            {qrError && <p className="text-xs text-slate-500">{qrError}</p>}
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={handleRetryQr}
+                              className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg transition flex items-center gap-1.5"
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" />
+                              Tentar novamente
+                            </button>
+                            <button
+                              onClick={() => setConnectMode("choice")}
+                              className="px-4 py-2 border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-lg transition"
+                            >
+                              Voltar
+                            </button>
+                          </div>
                         </div>
                       )}
+
+                      {/* ESTADO: Conectado */}
+                      {qrStatus === "connected" && (
+                        <div className="flex flex-col items-center justify-center space-y-3">
+                          <div className="bg-emerald-100 p-3 rounded-full">
+                            <CheckCircle className="h-10 w-10 text-emerald-600" />
+                          </div>
+                          <p className="text-sm font-bold text-emerald-700">WhatsApp conectado com sucesso!</p>
+                          <p className="text-xs text-slate-500">Redirecionando...</p>
+                        </div>
+                      )}
+
                     </div>
 
-                    <div className="text-left text-xs text-slate-500 bg-slate-50/50 p-4 rounded-xl space-y-2 border border-slate-100">
-                      <span className="font-bold text-slate-700 block">Como parear no celular:</span>
-                      <ol className="list-decimal pl-4 space-y-1">
-                        <li>No celular, abra o aplicativo do WhatsApp.</li>
-                        <li>Acesse o menu de configurações e clique em <strong>Aparelhos Conectados</strong>.</li>
-                        <li>Selecione <strong>Conectar um Aparelho</strong>.</li>
-                        <li>Aponte a câmera para ler o QR Code exibido acima.</li>
-                      </ol>
-                    </div>
+                    {/* Instruções — só mostra quando aguardando QR */}
+                    {(qrStatus === "waiting_qr" || qrStatus === "preparing") && (
+                      <div className="text-left text-xs text-slate-500 bg-slate-50/50 p-4 rounded-xl space-y-2 border border-slate-100">
+                        <span className="font-bold text-slate-700 block">Como parear no celular:</span>
+                        <ol className="list-decimal pl-4 space-y-1">
+                          <li>No celular, abra o aplicativo do WhatsApp.</li>
+                          <li>Acesse o menu de configurações e clique em <strong>Aparelhos Conectados</strong>.</li>
+                          <li>Selecione <strong>Conectar um Aparelho</strong>.</li>
+                          <li>Aponte a câmera para ler o QR Code exibido acima.</li>
+                        </ol>
+                      </div>
+                    )}
                   </div>
                 )}
 
