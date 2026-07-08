@@ -18,7 +18,7 @@ import { supabaseStateless } from "@/lib/supabaseStateless";
  */
 
 type StatusResponse = {
-  status: "waiting_qr" | "connecting" | "connected" | "error";
+  status: "waiting_qr" | "waiting_pair_code" | "connecting" | "connected" | "error";
   qrImageSrc: string | null;
   phone?: string;
   message?: string;
@@ -131,6 +131,13 @@ export async function GET(_request: NextRequest) {
         }
       }, 10000);
 
+      if (connection.status === "waiting_pair_code") {
+        return NextResponse.json({
+          status: "waiting_pair_code",
+          qrImageSrc: null,
+        } satisfies StatusResponse);
+      }
+
       // QR de demonstração — imagem PNG válida e renderizável
       const demoQr =
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAMAAABrrFhUAAAA" +
@@ -201,6 +208,20 @@ export async function GET(_request: NextRequest) {
           status: "connected",
           qrImageSrc: null,
           phone: String(raw.phone ?? raw.owner ?? raw.number ?? ""),
+        } satisfies StatusResponse);
+      }
+
+      if (uazapiStatus === "connecting") {
+        return NextResponse.json({
+          status: "connecting",
+          qrImageSrc: null,
+        } satisfies StatusResponse);
+      }
+
+      if (connection.status === "waiting_pair_code") {
+        return NextResponse.json({
+          status: "waiting_pair_code",
+          qrImageSrc: null,
         } satisfies StatusResponse);
       }
 

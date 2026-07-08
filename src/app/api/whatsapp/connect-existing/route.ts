@@ -280,51 +280,48 @@ export async function POST(request: NextRequest) {
 
       const normalized = normalizeUazapiStatusResponse(jsonBody);
 
-      // 4. Apenas salvar a conexão no banco se o status for "connected"
-      if (normalized.status === "connected") {
-        const { data: existing } = await supabaseStateless
-          .from("whatsapp_connections")
-          .select("id")
-          .eq("organization_id", orgId)
-          .maybeSingle();
+      // 4. Salvar ou atualizar a conexão no banco de dados.
+      // Se o status retornado da UAZAPI for conectado, salvamos como "connected",
+      // caso contrário salvamos como "disconnected" para permitir pareamento posterior.
+      const statusToSave = normalized.status === "connected" ? "connected" : "disconnected";
 
-        if (existing) {
-          await supabaseStateless
-            .from("whatsapp_connections")
-            .update({
-              connection_name,
-              base_url,
-              instance_name,
-              instance_token,
-              owner_phone: normalized.phone || "",
-              status: normalized.status,
-              connected_at: new Date().toISOString(),
-              last_health_check_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", existing.id);
-        } else {
-          await supabaseStateless
-            .from("whatsapp_connections")
-            .insert([{
-              organization_id: orgId,
-              provider: "uazapi",
-              connection_name,
-              base_url,
-              instance_name,
-              instance_token,
-              owner_phone: normalized.phone || "",
-              status: normalized.status,
-              connected_at: new Date().toISOString(),
-              last_health_check_at: new Date().toISOString(),
-            }]);
-        }
+      const { data: existing } = await supabaseStateless
+        .from("whatsapp_connections")
+        .select("id")
+        .eq("organization_id", orgId)
+        .maybeSingle();
+
+      const connectionPayload = {
+        connection_name,
+        base_url,
+        instance_name,
+        instance_token,
+        owner_phone: normalized.phone || "",
+        status: statusToSave,
+        connected_at: normalized.status === "connected" ? new Date().toISOString() : null,
+        last_health_check_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      if (existing) {
+        await supabaseStateless
+          .from("whatsapp_connections")
+          .update(connectionPayload)
+          .eq("id", existing.id);
+      } else {
+        await supabaseStateless
+          .from("whatsapp_connections")
+          .insert([{
+            organization_id: orgId,
+            provider: "uazapi",
+            ...connectionPayload
+          }]);
       }
 
       return NextResponse.json({
         ok: true,
         instanceName: normalized.instanceName || instance_name,
-        status: normalized.status,
+        status: statusToSave,
         phone: normalized.phone,
       });
 
