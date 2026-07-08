@@ -432,7 +432,7 @@ export default function InboxPage() {
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-800 tracking-tight">Inbox</h2>
               <button 
-                onClick={loadChats} 
+                onClick={() => loadChats()} 
                 className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition"
                 title="Sincronizar conversas"
               >
