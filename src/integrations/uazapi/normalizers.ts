@@ -80,7 +80,10 @@ export function normalizeUazapiMessage(msg: UazapiMessage): NormalizedMessage {
   };
 }
 
-export function normalizeUazapiInstanceStatus(raw: UazapiInstanceStatusResponse): NormalizedInstanceStatus {
+export function normalizeUazapiInstanceStatus(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  raw: UazapiInstanceStatusResponse | Record<string, any> | null | undefined
+): NormalizedInstanceStatus {
   if (!raw) {
     return {
       status: "disconnected",
@@ -92,23 +95,34 @@ export function normalizeUazapiInstanceStatus(raw: UazapiInstanceStatusResponse)
     };
   }
 
-  const isConnected = !!(raw.connected || raw.loggedIn);
-  
+  // Per spec: connected = status.connected === true OR instance.status === "connected"
+  const statusConnected = (raw as Record<string, unknown>).status as Record<string, unknown> | undefined;
+  const isConnectedViaStatus = statusConnected?.connected === true || statusConnected?.loggedIn === true;
+  const isConnectedViaInstance = raw.instance?.status === "connected";
+  const isConnectedLegacy = !!(raw.connected || raw.loggedIn);
+  const isConnected = isConnectedViaStatus || isConnectedViaInstance || isConnectedLegacy;
+
   // Resolve status string
   let status: NormalizedInstanceStatus["status"] = "disconnected";
   if (isConnected) {
     status = "connected";
   } else if (raw.instance?.status) {
-    status = raw.instance.status as NormalizedInstanceStatus["status"];
+    const s = raw.instance.status as string;
+    if (s === "connecting" || s === "waiting_qr" || s === "waiting_pair_code" || s === "error") {
+      status = s as NormalizedInstanceStatus["status"];
+    } else {
+      status = "disconnected";
+    }
   }
 
-  // Extract phone owner
+  // Extract phone owner — per spec: status.jid.user
   let phone: string | null = null;
-  if (raw.jid) {
-    if (typeof raw.jid === "string") {
-      phone = raw.jid.split(":")[0].split("@")[0];
-    } else if (typeof raw.jid === "object") {
-      phone = raw.jid.user || null;
+  const jidField = statusConnected?.jid ?? raw.jid;
+  if (jidField) {
+    if (typeof jidField === "string") {
+      phone = jidField.split(":")[0].split("@")[0];
+    } else if (typeof jidField === "object" && jidField !== null) {
+      phone = (jidField as Record<string, string>).user || null;
     }
   }
   if (!phone && raw.instance?.owner) {
@@ -118,15 +132,19 @@ export function normalizeUazapiInstanceStatus(raw: UazapiInstanceStatusResponse)
     phone = phone.replace(/\D/g, "");
   }
 
-  // Formatting QR code image
+  // Per spec: QR code is at response.instance.qrcode (NOT response.qrCode or response.qr)
   let qrImageSrc: string | null = null;
   if (raw.instance?.qrcode) {
-    const q = raw.instance.qrcode.trim();
+    const q = String(raw.instance.qrcode).trim();
     qrImageSrc = q.startsWith("data:image/") ? q : `data:image/png;base64,${q}`;
   }
 
-  const pairCode = raw.instance?.paircode || null;
-  const instanceName = raw.instance?.name || null;
+  // Per spec: pair code is at response.instance.paircode (NOT response.pairCode or response.code)
+  const pairCode: string | null = raw.instance?.paircode
+    ? String(raw.instance.paircode)
+    : null;
+
+  const instanceName: string | null = raw.instance?.name || null;
 
   return {
     status,

@@ -32,6 +32,8 @@ export default function WhatsAppIntegrationPage() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [connectMode, setConnectMode] = useState<"choice" | "existing" | "new">("choice");
+  // 'qr' | 'pair_code' — preservado para retry
+  const [chosenMethod, setChosenMethod] = useState<"qr" | "pair_code" | null>(null);
   const [flowStatus, setFlowStatus] = useState<"idle" | "creating_instance" | "waiting_method" | "waiting_qr" | "waiting_pair_code" | "connecting" | "connected" | "error">("idle");
   const [pairingSubStep, setPairingSubStep] = useState<"none" | "phone_input">("none");
   const [isExistingPairing, setIsExistingPairing] = useState(false);
@@ -211,6 +213,7 @@ export default function WhatsAppIntegrationPage() {
   };
 
   // Consulta nosso endpoint interno GET /api/whatsapp/status
+  // Aplica QR Code e Pair Code ao estado quando disponíveis via polling
   const fetchStatus = async (): Promise<string> => {
     try {
       const res = await fetch("/api/whatsapp/status");
@@ -222,36 +225,47 @@ export default function WhatsAppIntegrationPage() {
         return "connected";
       }
 
-      if (data.status === "waiting_qr" && data.qrImageSrc) {
-        setFlowStatus("waiting_qr");
+      if (data.status === "connecting") {
+        setFlowStatus("connecting");
+        // Não limpar QR/pairCode — pode já estar exibido
+        return "connecting";
+      }
+
+      // QR Code disponível via polling
+      if (data.qrImageSrc) {
         setQrImageSrc(data.qrImageSrc);
+        setFlowStatus("waiting_qr");
         setQrError(null);
         return "waiting_qr";
       }
 
-      if (data.status === "waiting_pair_code") {
+      // Pair Code disponível via polling
+      if (data.pairCode) {
+        setPairCode(data.pairCode);
         setFlowStatus("waiting_pair_code");
-        setQrImageSrc(null);
         setQrError(null);
         return "waiting_pair_code";
       }
 
-      if (data.status === "connecting") {
-        setFlowStatus("connecting");
-        setQrImageSrc(null);
-        setQrError(null);
-        return "connecting";
+      // Ainda aguardando — não é erro, só continua o polling
+      if (data.status === "waiting_qr" || data.status === "waiting_pair_code") {
+        // Mantém estado atual (loading) sem mostrar erro
+        return data.status as string;
       }
 
-      setFlowStatus("error");
-      setQrError(data.message || "Não foi possível sincronizar o status da instância.");
-      setQrImageSrc(null);
-      return "error";
+      // Erro real do provider
+      if (!res.ok || data.status === "error") {
+        setFlowStatus("error");
+        setQrError(data.message || "Não foi possível sincronizar o status da instância.");
+        return "error";
+      }
+
+      // Outros estados: continua aguardando
+      return data.status as string;
     } catch {
-      setFlowStatus("error");
-      setQrError("Falha na comunicação com o servidor.");
-      setQrImageSrc(null);
-      return "error";
+      // Falha de rede: NÃO sair do estado de loading ainda
+      console.warn("[POLL_STATUS] Falha temporária de comunicação, continuando polling...");
+      return "polling_error";
     }
   };
 
@@ -291,9 +305,13 @@ export default function WhatsAppIntegrationPage() {
 
   // Nova conexão: chama POST /api/whatsapp/create-instance
   const handleConnectNew = async (method: "qr" | "pairing", phoneStr?: string) => {
+    // Normalizar: "pairing" → "pair_code" internamente
+    const normalizedMethod: "qr" | "pair_code" = method === "pairing" ? "pair_code" : "qr";
+    setChosenMethod(normalizedMethod);
     setLoading(true);
     setFlowStatus("creating_instance");
     setQrImageSrc(null);
+    setPairCode(null);
     setQrError(null);
     try {
       const res = await fetch("/api/whatsapp/create-instance", {
@@ -308,15 +326,17 @@ export default function WhatsAppIntegrationPage() {
       const data = await res.json();
 
       if (res.ok && data.status !== "error") {
-        if (method === "pairing") {
-          setPairCode(data.pairCode || null);
+        if (normalizedMethod === "pair_code") {
+          // pairCode pode já ter vindo na resposta (otimização) ou vir via polling
+          if (data.pairCode) setPairCode(data.pairCode);
           setFlowStatus("waiting_pair_code");
-          startStatusPolling();
         } else {
-          setQrImageSrc(data.qrImageSrc || null);
+          // qrImageSrc pode já ter vindo ou vir via polling
+          if (data.qrImageSrc) setQrImageSrc(data.qrImageSrc);
           setFlowStatus("waiting_qr");
-          startStatusPolling();
         }
+        // Sempre iniciar polling — vai capturar QR/pairCode se não veio imediatamente
+        startStatusPolling();
       } else {
         setFlowStatus("error");
         setQrError(data.message || data.error || "Erro ao iniciar pareamento.");
@@ -348,14 +368,23 @@ export default function WhatsAppIntegrationPage() {
     handleConnectNew("pairing", fullPhone);
   };
 
-  // Retry logic
+  // Retry logic — preserva o método escolhido anteriormente
   const handleRetryConnection = () => {
-    if (pairingSubStep === "phone_input" || flowStatus === "waiting_pair_code") {
+    if (chosenMethod === "pair_code" || pairingSubStep === "phone_input" || flowStatus === "waiting_pair_code") {
+      // Preserva telefone preenchido
       const cleanDdd = dddVal.replace(/\D/g, "");
       const cleanPhone = phoneVal.replace(/\D/g, "");
-      const fullPhone = "55" + cleanDdd + cleanPhone;
-      handleConnectNew("pairing", fullPhone);
+      if (cleanDdd && cleanPhone) {
+        const fullPhone = "55" + cleanDdd + cleanPhone;
+        handleConnectNew("pairing", fullPhone);
+      } else {
+        // Volta para tela de telefone se não tiver preenchido
+        setFlowStatus("waiting_method");
+        setPairingSubStep("phone_input");
+        setQrError(null);
+      }
     } else {
+      // Fluxo QR: repetir QR
       handleConnectNew("qr");
     }
   };
@@ -812,89 +841,113 @@ export default function WhatsAppIntegrationPage() {
                       </div>
                     )}
 
-                    {/* TELA QR CODE */}
-                    {flowStatus === "waiting_qr" && qrImageSrc && (
+                    {/* TELA QR CODE: mostra QR quando disponível, ou loading enquanto aguarda polling */}
+                    {flowStatus === "waiting_qr" && (
                       <div className="space-y-5 text-center">
-                        <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl flex flex-col items-center justify-center min-h-[260px]">
-                          <p className="text-xs text-slate-500 mb-4 font-medium">Leia o QR Code com o aplicativo WhatsApp do seu celular comercial:</p>
-                          <div className="bg-white p-3.5 border border-slate-200 rounded-xl shadow-sm">
-                            <img
-                              src={qrImageSrc}
-                              alt="QR Code para conectar WhatsApp"
-                              width={220}
-                              height={220}
-                              className="object-contain"
-                            />
+                        {qrImageSrc ? (
+                          <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl flex flex-col items-center justify-center min-h-[260px]">
+                            <p className="text-xs text-slate-500 mb-4 font-medium">Leia o QR Code com o aplicativo WhatsApp do seu celular comercial:</p>
+                            <div className="bg-white p-3.5 border border-slate-200 rounded-xl shadow-sm">
+                              <img
+                                src={qrImageSrc}
+                                alt="QR Code para conectar WhatsApp"
+                                width={220}
+                                height={220}
+                                className="object-contain"
+                              />
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-4 flex items-center gap-1 justify-center">
+                              <RefreshCw className="h-3 w-3 animate-spin text-slate-300" />
+                              O QR Code será renovado automaticamente.
+                            </p>
                           </div>
-                          <p className="text-[10px] text-slate-400 mt-4 flex items-center gap-1 justify-center">
-                            <RefreshCw className="h-3 w-3 animate-spin text-slate-300" />
-                            O QR Code será renovado automaticamente.
-                          </p>
-                        </div>
+                        ) : (
+                          <div className="bg-slate-50 border border-slate-200 p-8 rounded-2xl flex flex-col items-center justify-center min-h-[260px] space-y-4">
+                            <RefreshCw className="h-10 w-10 text-emerald-500 animate-spin" />
+                            <div className="text-center">
+                              <p className="text-sm font-semibold text-slate-700">Gerando QR Code...</p>
+                              <p className="text-xs text-slate-400 mt-1">Aguarde, o QR Code está sendo gerado pelo servidor.</p>
+                            </div>
+                          </div>
+                        )}
 
                         {/* Instruções */}
-                        <div className="text-left text-xs text-slate-500 bg-slate-50/50 p-4 rounded-xl space-y-2 border border-slate-100">
-                          <span className="font-bold text-slate-700 block">Como parear no celular:</span>
-                          <ol className="list-decimal pl-4 space-y-1 text-slate-600">
-                            <li>Abra o aplicativo do WhatsApp no celular.</li>
-                            <li>Acesse <strong>Aparelhos Conectados</strong> nas configurações.</li>
-                            <li>Toque em <strong>Conectar Aparelho</strong>.</li>
-                            <li>Aponte a câmera para ler o QR Code exibido.</li>
-                          </ol>
-                        </div>
+                        {qrImageSrc && (
+                          <div className="text-left text-xs text-slate-500 bg-slate-50/50 p-4 rounded-xl space-y-2 border border-slate-100">
+                            <span className="font-bold text-slate-700 block">Como parear no celular:</span>
+                            <ol className="list-decimal pl-4 space-y-1 text-slate-600">
+                              <li>Abra o aplicativo do WhatsApp no celular.</li>
+                              <li>Acesse <strong>Aparelhos Conectados</strong> nas configurações.</li>
+                              <li>Toque em <strong>Conectar Aparelho</strong>.</li>
+                              <li>Aponte a câmera para ler o QR Code exibido.</li>
+                            </ol>
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {/* TELA CÓDIGO DE PAREAMENTO (PAIR CODE) */}
-                    {flowStatus === "waiting_pair_code" && pairCode && (
+                    {/* TELA CÓDIGO DE PAREAMENTO: mostra código quando disponível, ou loading enquanto aguarda polling */}
+                    {flowStatus === "waiting_pair_code" && (
                       <div className="space-y-5 text-center animate-fade-in">
-                        <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl flex flex-col items-center justify-center">
-                          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Código de Pareamento</span>
-                          
-                          {/* Code Display Box */}
-                          <div className="my-6 bg-slate-900 text-emerald-400 text-3xl font-mono tracking-widest px-8 py-4 rounded-xl border border-slate-800 shadow-inner select-all">
-                            {pairCode}
-                          </div>
+                        {pairCode ? (
+                          <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl flex flex-col items-center justify-center">
+                            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Código de Pareamento</span>
+                            
+                            {/* Code Display Box */}
+                            <div className="my-6 bg-slate-900 text-emerald-400 text-3xl font-mono tracking-widest px-8 py-4 rounded-xl border border-slate-800 shadow-inner select-all">
+                              {pairCode}
+                            </div>
 
-                          <button
-                            onClick={() => handleCopyCode(pairCode)}
-                            className="px-4 py-2 border border-slate-200 hover:border-slate-350 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold transition flex items-center gap-2"
-                          >
-                            {copied ? (
-                              <>
-                                <CheckCircle className="h-3.5 w-3.5 text-emerald-500 animate-scale-up" />
-                                <span className="text-emerald-600">Copiado!</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="h-3.5 w-3.5" />
-                                <span>Copiar Código</span>
-                              </>
+                            <button
+                              onClick={() => handleCopyCode(pairCode)}
+                              className="px-4 py-2 border border-slate-200 hover:border-slate-350 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold transition flex items-center gap-2"
+                            >
+                              {copied ? (
+                                <>
+                                  <CheckCircle className="h-3.5 w-3.5 text-emerald-500 animate-scale-up" />
+                                  <span className="text-emerald-600">Copiado!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="h-3.5 w-3.5" />
+                                  <span>Copiar Código</span>
+                                </>
+                              )}
+                            </button>
+
+                            {dddVal && phoneVal && (
+                              <p className="text-xs text-slate-500 mt-4">
+                                Enviado para o número: <strong className="text-slate-700">+55 ({dddVal}) {phoneVal}</strong>
+                              </p>
                             )}
-                          </button>
-
-                          {dddVal && phoneVal && (
-                            <p className="text-xs text-slate-500 mt-4">
-                              Enviado para o número: <strong className="text-slate-700">+55 ({dddVal}) {phoneVal}</strong>
+                            <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1 justify-center">
+                              <RefreshCw className="h-3 w-3 animate-spin text-slate-300" />
+                              Aguardando vinculação do aparelho...
                             </p>
-                          )}
-                          <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1 justify-center">
-                            <RefreshCw className="h-3 w-3 animate-spin text-slate-300" />
-                            Aguardando vinculação do aparelho...
-                          </p>
-                        </div>
+                          </div>
+                        ) : (
+                          <div className="bg-slate-50 border border-slate-200 p-8 rounded-2xl flex flex-col items-center justify-center min-h-[220px] space-y-4">
+                            <RefreshCw className="h-10 w-10 text-emerald-500 animate-spin" />
+                            <div className="text-center">
+                              <p className="text-sm font-semibold text-slate-700">Gerando código de pareamento...</p>
+                              <p className="text-xs text-slate-400 mt-1">Aguarde, o código está sendo gerado pelo servidor.</p>
+                            </div>
+                          </div>
+                        )}
 
-                        {/* Instruções */}
-                        <div className="text-left text-xs text-slate-500 bg-slate-50/50 p-4 rounded-xl space-y-2 border border-slate-100">
-                          <span className="font-bold text-slate-700 block">Como conectar usando o código:</span>
-                          <ol className="list-decimal pl-4 space-y-1.5 text-slate-600">
-                            <li>No celular, abra o WhatsApp.</li>
-                            <li>Acesse <strong>Aparelhos Conectados</strong> nas configurações.</li>
-                            <li>Toque em <strong>Conectar Aparelho</strong>.</li>
-                            <li>Abaixo do leitor de QR, toque em <strong>Conectar com número de telefone</strong> (Link with phone number instead).</li>
-                            <li>Digite o código de 8 caracteres exibido acima no seu celular.</li>
-                          </ol>
-                        </div>
+                        {/* Instruções (apenas quando código disponível) */}
+                        {pairCode && (
+                          <div className="text-left text-xs text-slate-500 bg-slate-50/50 p-4 rounded-xl space-y-2 border border-slate-100">
+                            <span className="font-bold text-slate-700 block">Como conectar usando o código:</span>
+                            <ol className="list-decimal pl-4 space-y-1.5 text-slate-600">
+                              <li>No celular, abra o WhatsApp.</li>
+                              <li>Acesse <strong>Aparelhos Conectados</strong> nas configurações.</li>
+                              <li>Toque em <strong>Conectar Aparelho</strong>.</li>
+                              <li>Abaixo do leitor de QR, toque em <strong>Conectar com número de telefone</strong> (Link with phone number instead).</li>
+                              <li>Digite o código de 8 caracteres exibido acima no seu celular.</li>
+                            </ol>
+                          </div>
+                        )}
                       </div>
                     )}
 

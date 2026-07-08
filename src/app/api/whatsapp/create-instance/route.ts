@@ -13,9 +13,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const orgId = user.user_metadata?.organization_id || user.app_metadata?.organization_id || "empresa-1";
+    const orgId = user.user_metadata?.organization_id || user.app_metadata?.organization_id;
+    if (!orgId) {
+      return NextResponse.json({ error: "No organization found" }, { status: 403 });
+    }
+
     const body = await request.json().catch(() => ({}));
     const { method = "qr", phone, use_existing = false } = body;
+
+    // Normalize method: "pairing" → "pair_code" internally
+    const connectMethod: "qr" | "pair_code" = method === "pairing" ? "pair_code" : "qr";
+
+    // --- LOGS DIAGNÓSTICO ---
+    const isDev = process.env.NODE_ENV !== "production";
+    if (isDev) {
+      console.log("[CONNECT_METHOD]", { method: connectMethod });
+      console.log("[CONNECT_REQUEST]", { hasPhone: !!phone, orgId });
+    }
 
     let baseUrl = process.env.UAZAPI_BASE_URL || "https://free.uazapi.com";
     let instanceName = `top-instance-${orgId}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -57,11 +71,16 @@ export async function POST(request: NextRequest) {
     isSimulated = generatedToken.startsWith("token-gen-") || process.env.NEXT_PUBLIC_ENABLE_MOCK_DATA === "true";
 
     // ── Passo 2: Iniciar conexão via POST /instance/connect ──
+    // QR e Pair Code são fluxos SEPARADOS.
+    // Em AMBOS os casos: NÃO falhar se QR/pairCode não vier na primeira resposta.
+    // O frontend vai fazer polling via GET /instance/status.
+
     let qrImageSrc: string | null = null;
     let pairCode: string | null = null;
 
     if (isSimulated) {
-      if (method === "pairing") {
+      // Modo simulado: devolver dados fixos para teste de UI
+      if (connectMethod === "pair_code") {
         pairCode = "WXYZ-1234";
       } else {
         qrImageSrc =
@@ -74,35 +93,83 @@ export async function POST(request: NextRequest) {
       }
     } else {
       try {
-        // Conectar instância na UAZAPI
-        const cleanPhone = phone ? phone.replace(/\D/g, "") : undefined;
-        await connectInstance(baseUrl, generatedToken, cleanPhone);
+        // Normalizar telefone para pair_code: apenas dígitos, 10-15 chars
+        const cleanPhone = connectMethod === "pair_code" && phone
+          ? phone.replace(/\D/g, "")
+          : undefined;
 
-        // Configurar Webhook na UAZAPI
-        const webhookUrl = "https://saastop.vercel.app/api/webhooks/uazapi";
-        try {
-          await configureWebhook(baseUrl, generatedToken, webhookUrl);
-          console.log("[UAZAPI_WEBHOOK_CONFIG] Webhook configurado:", webhookUrl);
-        } catch (webhookErr) {
-          console.warn("[UAZAPI_WEBHOOK_CONFIG] Erro ao configurar webhook:", webhookErr instanceof Error ? webhookErr.message : webhookErr);
+        // ── QR CODE: body vazio (sem phone) ──
+        // ── PAIR CODE: body com phone normalizado ──
+        const connectBody: Record<string, string> = {};
+        if (connectMethod === "pair_code" && cleanPhone) {
+          connectBody.phone = cleanPhone;
         }
 
-        // Consultar status para obter QR/Pair Code
-        const statusData = await getInstanceStatus(baseUrl, generatedToken);
-        const normalized = normalizeUazapiInstanceStatus(statusData);
+        if (isDev) {
+          console.log("[CONNECT_REQUEST]", {
+            endpoint: `${baseUrl}/instance/connect`,
+            method: "POST",
+            hasPhone: !!cleanPhone,
+            connectMethod
+          });
+        }
 
-        if (method === "pairing") {
-          pairCode = normalized.pairCode;
-          if (!pairCode) {
-            return NextResponse.json({
-              status: "error",
-              code: "PROVIDER_ERROR",
-              message: "Código de pareamento não retornado pela UAZAPI."
-            }, { status: 400 });
-          }
+        const connectRaw = await connectInstance(baseUrl, generatedToken, connectMethod === "pair_code" ? cleanPhone : undefined);
+
+        if (isDev) {
+          const normalized = normalizeUazapiInstanceStatus(connectRaw || {});
+          console.log("[CONNECT_RESPONSE]", {
+            httpStatus: 200,
+            instanceStatus: normalized.status,
+            hasQrCode: !!normalized.qrImageSrc,
+            hasPairCode: !!normalized.pairCode,
+          });
+        }
+
+        // Tentar extrair QR/pairCode da resposta imediata do /instance/connect
+        // (pode já vir, ou pode precisar de polling — AMBOS são válidos)
+        const immediateNormalized = normalizeUazapiInstanceStatus(connectRaw || {});
+        if (connectMethod === "pair_code") {
+          pairCode = immediateNormalized.pairCode;
+          // Se não veio imediatamente, NÃO é erro — frontend vai fazer polling
         } else {
-          qrImageSrc = normalized.qrImageSrc;
+          qrImageSrc = immediateNormalized.qrImageSrc;
+          // Se não veio imediatamente, NÃO é erro — frontend vai fazer polling
         }
+
+        // Se não veio na resposta do connect, tentar uma vez o GET /instance/status
+        if (connectMethod === "pair_code" && !pairCode) {
+          try {
+            const statusData = await getInstanceStatus(baseUrl, generatedToken);
+            const statusNorm = normalizeUazapiInstanceStatus(statusData);
+            pairCode = statusNorm.pairCode;
+            if (isDev) {
+              console.log("[CONNECT_RESPONSE] status poll após connect:", {
+                instanceStatus: statusNorm.status,
+                hasPairCode: !!pairCode,
+              });
+            }
+          } catch {
+            // Ignorar erro do status — frontend vai fazer polling
+          }
+        }
+
+        if (connectMethod === "qr" && !qrImageSrc) {
+          try {
+            const statusData = await getInstanceStatus(baseUrl, generatedToken);
+            const statusNorm = normalizeUazapiInstanceStatus(statusData);
+            qrImageSrc = statusNorm.qrImageSrc;
+          } catch {
+            // Ignorar — frontend vai fazer polling
+          }
+        }
+
+        // Configurar webhook (não-bloqueante)
+        const webhookUrl = process.env.UAZAPI_WEBHOOK_URL || "https://saastop.vercel.app/api/webhooks/uazapi";
+        configureWebhook(baseUrl, generatedToken, webhookUrl).catch((webhookErr) => {
+          console.warn("[UAZAPI_WEBHOOK_CONFIG] Erro ao configurar webhook:", webhookErr instanceof Error ? webhookErr.message : webhookErr);
+        });
+
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn("[UAZAPI_CONNECT] Falha ao conectar:", msg);
@@ -121,14 +188,14 @@ export async function POST(request: NextRequest) {
       .eq("organization_id", orgId)
       .maybeSingle();
 
-    const statusToSave = method === "pairing" ? "waiting_pair_code" : "waiting_qr";
+    const statusToSave = connectMethod === "pair_code" ? "waiting_pair_code" : "waiting_qr";
     const cleanPhone = phone ? phone.replace(/\D/g, "") : "";
 
     const connectionPayload: Record<string, string | null> = {
       base_url: baseUrl,
       instance_name: instanceName,
       instance_token: generatedToken,
-      owner_phone: method === "pairing" ? cleanPhone : "",
+      owner_phone: connectMethod === "pair_code" ? cleanPhone : "",
       status: statusToSave,
       updated_at: new Date().toISOString()
     };
@@ -156,17 +223,14 @@ export async function POST(request: NextRequest) {
       if (error) throw error;
     }
 
-    if (method === "pairing") {
-      return NextResponse.json({
-        status: "waiting_pair_code",
-        pairCode: pairCode || ""
-      });
-    } else {
-      return NextResponse.json({
-        status: "waiting_qr",
-        qrImageSrc: qrImageSrc || ""
-      });
-    }
+    // Retornar: mesmo que QR/pairCode sejam null, o frontend faz polling
+    return NextResponse.json({
+      status: statusToSave,
+      // Pode ser null — frontend vai aguardar via polling GET /api/whatsapp/status
+      qrImageSrc: qrImageSrc || null,
+      pairCode: pairCode || null,
+    });
+
   } catch (err) {
     const msg = err instanceof Error ? err.message : JSON.stringify(err);
     console.error("[CREATE_INSTANCE] Erro:", msg);

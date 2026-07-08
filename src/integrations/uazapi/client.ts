@@ -75,12 +75,12 @@ export async function connectInstance(baseUrl: string, instanceToken: string, ph
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-  const payload: Record<string, string> = {
-    browser: "auto"
-  };
+  // QR: body vazio {}  |  pair_code: body com phone
+  const payload: Record<string, string> = {};
   if (phone) {
     payload.phone = phone.replace(/\D/g, "");
   }
+
 
   try {
     const res = await fetch(url, {
