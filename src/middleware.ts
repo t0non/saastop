@@ -37,8 +37,9 @@ export async function middleware(request: NextRequest) {
 
   const isLoginPage = request.nextUrl.pathname.startsWith("/login");
   const isDevRoute = request.nextUrl.pathname.startsWith("/dev"); // Allow access to /dev/supabase-status
+  const isWebhookRoute = request.nextUrl.pathname.startsWith("/api/webhooks/uazapi");
 
-  if (isDevRoute) {
+  if (isDevRoute || isWebhookRoute) {
     return supabaseResponse;
   }
 

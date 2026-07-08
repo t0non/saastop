@@ -105,6 +105,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       localStorage.setItem('top_companies', JSON.stringify(defaultCompanies));
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCompanies(loadedCompanies);
 
     let loadedLeads: Lead[] = [];
@@ -113,6 +114,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       localStorage.setItem('top_leads', JSON.stringify([]));
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLeads(loadedLeads);
 
     let loadedConversations: Conversation[] = [];
@@ -121,6 +123,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       localStorage.setItem('top_conversations', JSON.stringify([]));
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setConversations(loadedConversations);
 
     let loadedLinks: TrackingLink[] = [];
@@ -129,6 +132,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       localStorage.setItem('top_links', JSON.stringify([]));
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTrackingLinks(loadedLinks);
 
     let loadedRules: AutomationRule[] = [];
@@ -137,6 +141,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       localStorage.setItem('top_rules', JSON.stringify([]));
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAutomationRules(loadedRules);
 
     let loadedConversions: ConversionEvent[] = [];
@@ -145,6 +150,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       localStorage.setItem('top_conversions', JSON.stringify([]));
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setConversions(loadedConversions);
   }, []);
 
