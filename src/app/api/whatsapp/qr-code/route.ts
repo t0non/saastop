@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseStateless } from "@/lib/supabaseStateless";
+import { getServerClient } from "@/lib/supabaseServer";
 
 // ──────────────────────────────────────────────────────────
 // Tipos de resposta padronizada para o frontend
@@ -11,6 +11,7 @@ interface QrResponse {
   qrImageSrc: string | null;
   error?: string;
 }
+
 
 // ──────────────────────────────────────────────────────────
 // Normalizador de QR Code
@@ -101,9 +102,21 @@ function logQrShape(label: string, data: Record<string, unknown>) {
 // ──────────────────────────────────────────────────────────
 export async function GET(_request: NextRequest) {
   try {
-    const orgId = "empresa-1";
+    const supabase = await getServerClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-    const { data: connection, error } = await supabaseStateless
+    if (authError || !user) {
+      const resp: QrResponse = {
+        status: "error",
+        qrImageSrc: null,
+        error: "Não autorizado."
+      };
+      return NextResponse.json(resp, { status: 401 });
+    }
+
+    const orgId = user.user_metadata?.organization_id || user.app_metadata?.organization_id || "empresa-1";
+
+    const { data: connection, error } = await supabase
       .from("whatsapp_connections")
       .select("id, status, base_url, instance_name, instance_token")
       .eq("organization_id", orgId)
@@ -134,7 +147,7 @@ export async function GET(_request: NextRequest) {
       // Agenda transição automática para "connected" após 7s
       setTimeout(async () => {
         try {
-          await supabaseStateless
+          await supabase
             .from("whatsapp_connections")
             .update({
               status: "connected",

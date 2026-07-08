@@ -1,12 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseStateless } from "@/lib/supabaseStateless";
+import { getServerClient } from "@/lib/supabaseServer";
 
 export async function GET(request: NextRequest) {
   try {
-    const orgId = "empresa-1"; // Pilot organization fallback
+    const supabase = await getServerClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const orgId = user.user_metadata?.organization_id || user.app_metadata?.organization_id || "empresa-1";
 
     // Query active connection
-    const { data: connection, error } = await supabaseStateless
+    const { data: connection, error } = await supabase
       .from("whatsapp_connections")
       .select("*")
       .eq("organization_id", orgId)
@@ -41,9 +48,16 @@ export async function GET(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const orgId = "empresa-1";
+    const supabase = await getServerClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-    const { error } = await supabaseStateless
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const orgId = user.user_metadata?.organization_id || user.app_metadata?.organization_id || "empresa-1";
+
+    const { error } = await supabase
       .from("whatsapp_connections")
       .delete()
       .eq("organization_id", orgId);

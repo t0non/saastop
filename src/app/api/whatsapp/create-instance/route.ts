@@ -1,76 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseStateless } from "@/lib/supabaseStateless";
-
-interface NormalizedStatus {
-  instanceName: string | null;
-  status: string | null;
-  qrCode: string | null;
-  pairCode: string | null;
-  connected: boolean;
-  loggedIn: boolean;
-  phone: string | null;
-}
-
-/**
- * Normaliza a resposta de status da UAZAPI conforme a especificação OpenAPI v2.1.1.
- */
-function normalizeUazapiStatusResponse(raw: unknown): NormalizedStatus {
-  if (!raw) {
-    return {
-      instanceName: null,
-      status: "disconnected",
-      qrCode: null,
-      pairCode: null,
-      connected: false,
-      loggedIn: false,
-      phone: null
-    };
-  }
-
-  const data = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const instance = (data.instance && typeof data.instance === "object" ? data.instance : {}) as Record<string, unknown>;
-  const status = (data.status && typeof data.status === "object" ? data.status : {}) as Record<string, unknown>;
-
-  let phone: string | null = null;
-  if (typeof status.jid === "string") {
-    phone = status.jid.split(":")[0].split("@")[0];
-  } else if (status.jid && typeof status.jid === "object") {
-    const jidObj = status.jid as Record<string, unknown>;
-    if (typeof jidObj.user === "string") {
-      phone = jidObj.user;
-    }
-  }
-
-  if (!phone && typeof instance.owner === "string") {
-    phone = instance.owner;
-  }
-
-  return {
-    instanceName: typeof instance.name === "string" ? instance.name : null,
-    status: typeof instance.status === "string" ? instance.status : "disconnected",
-    qrCode: typeof instance.qrcode === "string" ? instance.qrcode : null,
-    pairCode: typeof instance.paircode === "string" ? instance.paircode : null,
-    connected: typeof status.connected === "boolean" ? status.connected : false,
-    loggedIn: typeof status.loggedIn === "boolean" ? status.loggedIn : false,
-    phone
-  };
-}
-
-/**
- * Normaliza a imagem do QR Code para incluir o prefixo base64 se necessário.
- */
-function formatQrCode(qrRaw: string | null | undefined): string | null {
-  if (!qrRaw) return null;
-  const q = qrRaw.trim();
-  if (q.startsWith("data:image/")) {
-    return q;
-  }
-  return `data:image/png;base64,${q}`;
-}
+import { getServerClient } from "@/lib/supabaseServer";
+import { createInstance, connectInstance, configureWebhook, getInstanceStatus } from "@/integrations/uazapi/client";
+import { normalizeUazapiInstanceStatus } from "@/integrations/uazapi/normalizers";
 
 export async function POST(request: NextRequest) {
   try {
-    const orgId = "empresa-1";
+    // 1. Authenticate user
+    const supabase = await getServerClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const orgId = user.user_metadata?.organization_id || user.app_metadata?.organization_id || "empresa-1";
     const body = await request.json().catch(() => ({}));
     const { method = "qr", phone, use_existing = false } = body;
 
@@ -81,7 +24,7 @@ export async function POST(request: NextRequest) {
 
     // ── Passo 1: Obter ou criar credenciais de instância ──
     if (use_existing) {
-      const { data: existingConn } = await supabaseStateless
+      const { data: existingConn } = await supabase
         .from("whatsapp_connections")
         .select("base_url, instance_name, instance_token")
         .eq("organization_id", orgId)
@@ -100,29 +43,11 @@ export async function POST(request: NextRequest) {
       generatedToken = existingConn.instance_token;
     } else {
       const adminToken = process.env.UAZAPI_ADMIN_TOKEN;
-      if (adminToken) {
+      if (adminToken && !adminToken.startsWith("token-gen-")) {
         try {
-          const createRes = await fetch(`${baseUrl}/instance/create`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "admintoken": adminToken
-            },
-            body: JSON.stringify({
-              name: instanceName
-            })
-          });
-
-          if (createRes.ok) {
-            const createData = await createRes.json();
-            const returnedToken = createData.token ?? createData.instance?.token ?? createData.instance_token;
-            if (returnedToken) {
-              generatedToken = returnedToken;
-            }
-            console.log("[UAZAPI_CREATE] Instância criada com sucesso:", { instanceName });
-          } else {
-            console.warn("[UAZAPI_CREATE] Instância não criada:", createRes.status);
-          }
+          const createResult = await createInstance(baseUrl, adminToken, instanceName);
+          generatedToken = createResult.token;
+          console.log("[UAZAPI_CREATE] Instância criada com sucesso:", { instanceName });
         } catch (err) {
           console.warn("[UAZAPI_CREATE] Falha ao criar instância (modo simulado será ativado):", err instanceof Error ? err.message : err);
         }
@@ -149,68 +74,22 @@ export async function POST(request: NextRequest) {
       }
     } else {
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        // Conectar instância na UAZAPI
+        const cleanPhone = phone ? phone.replace(/\D/g, "") : undefined;
+        await connectInstance(baseUrl, generatedToken, cleanPhone);
 
-        const connectPayload: Record<string, string> = {};
-        if (method === "pairing" && phone) {
-          connectPayload.phone = phone.replace(/\D/g, "");
+        // Configurar Webhook na UAZAPI
+        const webhookUrl = "https://saastop.vercel.app/api/webhooks/uazapi";
+        try {
+          await configureWebhook(baseUrl, generatedToken, webhookUrl);
+          console.log("[UAZAPI_WEBHOOK_CONFIG] Webhook configurado:", webhookUrl);
+        } catch (webhookErr) {
+          console.warn("[UAZAPI_WEBHOOK_CONFIG] Erro ao configurar webhook:", webhookErr instanceof Error ? webhookErr.message : webhookErr);
         }
 
-        const connectRes = await fetch(`${baseUrl}/instance/connect`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "token": generatedToken,
-          },
-          body: JSON.stringify(connectPayload),
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-
-        if (!connectRes.ok) {
-          return NextResponse.json({
-            status: "error",
-            code: "PROVIDER_ERROR",
-            message: `Erro ao conectar UAZAPI: HTTP ${connectRes.status}`
-          }, { status: 400 });
-        }
-
-        // Depois consultar: GET {baseUrl}/instance/status para obter QR/Pair Code
-        const statusController = new AbortController();
-        const statusTimeoutId = setTimeout(() => statusController.abort(), 8000);
-
-        const statusRes = await fetch(`${baseUrl}/instance/status`, {
-          method: "GET",
-          headers: {
-            "token": generatedToken,
-          },
-          signal: statusController.signal,
-        });
-        clearTimeout(statusTimeoutId);
-
-        if (!statusRes.ok) {
-          return NextResponse.json({
-            status: "error",
-            code: "PROVIDER_ERROR",
-            message: `Erro ao consultar status da instância: HTTP ${statusRes.status}`
-          }, { status: 400 });
-        }
-
-        const statusData = await statusRes.json();
-        const normalized = normalizeUazapiStatusResponse(statusData);
-
-        // Log seguro no backend
-        console.log("[UAZAPI_CONNECT_STATUS_LOG]", {
-          endpoint: `${baseUrl}/instance/status`,
-          httpStatus: statusRes.status,
-          instanceStatus: normalized.status,
-          connected: normalized.connected,
-          loggedIn: normalized.loggedIn,
-          possuiQrCode: !!normalized.qrCode,
-          qrCodeLength: normalized.qrCode ? normalized.qrCode.length : 0,
-          possuiPairCode: !!normalized.pairCode,
-        });
+        // Consultar status para obter QR/Pair Code
+        const statusData = await getInstanceStatus(baseUrl, generatedToken);
+        const normalized = normalizeUazapiInstanceStatus(statusData);
 
         if (method === "pairing") {
           pairCode = normalized.pairCode;
@@ -222,7 +101,7 @@ export async function POST(request: NextRequest) {
             }, { status: 400 });
           }
         } else {
-          qrImageSrc = formatQrCode(normalized.qrCode);
+          qrImageSrc = normalized.qrImageSrc;
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -236,7 +115,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Passo 3: Salvar ou atualizar no banco de dados ──
-    const { data: existing } = await supabaseStateless
+    const { data: existing } = await supabase
       .from("whatsapp_connections")
       .select("id")
       .eq("organization_id", orgId)
@@ -245,7 +124,7 @@ export async function POST(request: NextRequest) {
     const statusToSave = method === "pairing" ? "waiting_pair_code" : "waiting_qr";
     const cleanPhone = phone ? phone.replace(/\D/g, "") : "";
 
-    const connectionPayload: Record<string, unknown> = {
+    const connectionPayload: Record<string, string | null> = {
       base_url: baseUrl,
       instance_name: instanceName,
       instance_token: generatedToken,
@@ -259,14 +138,14 @@ export async function POST(request: NextRequest) {
     }
 
     if (existing) {
-      const { error } = await supabaseStateless
+      const { error } = await supabase
         .from("whatsapp_connections")
         .update(connectionPayload)
         .eq("id", existing.id);
 
       if (error) throw error;
     } else {
-      const { error } = await supabaseStateless
+      const { error } = await supabase
         .from("whatsapp_connections")
         .insert([{
           organization_id: orgId,
