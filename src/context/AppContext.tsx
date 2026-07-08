@@ -272,6 +272,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
         });
 
+        // Buscar etapas da jornada comercial
+        const { data: rawStages, error: stagesErr } = await supabaseClient
+          .from("pipeline_stages")
+          .select("*")
+          .eq("organization_id", selectedCompanyId)
+          .eq("active", true)
+          .order("position", { ascending: true });
+
+        if (!stagesErr && rawStages && rawStages.length > 0) {
+          interface DbStageItem {
+            id: string;
+            name: string;
+            stage_type: string;
+            conversion_event?: string | null;
+          }
+          const stagesList = rawStages as unknown as DbStageItem[];
+          const mappedStages: PipelineStageConfig[] = stagesList.map((st) => {
+            let type: PipelineStageConfig["type"] = "progress";
+            if (st.stage_type === "first_contact" || st.stage_type === "initial") type = "initial";
+            else if (st.stage_type === "conversion" || st.stage_type === "conversion_intermediate") type = "conversion_intermediate";
+            else if (st.stage_type === "sale" || st.stage_type === "conversion_final") type = "conversion_final";
+            else if (st.stage_type === "lost") type = "lost";
+
+            let color = "bg-indigo-100 text-indigo-800 border-indigo-200";
+            if (type === "initial") color = "bg-blue-100 text-blue-800 border-blue-200";
+            else if (st.stage_type === "conversion" || st.stage_type === "conversion_intermediate") color = "bg-purple-100 text-purple-800 border-purple-200";
+            else if (type === "conversion_final") color = "bg-emerald-100 text-emerald-800 border-emerald-200";
+            else if (type === "lost") color = "bg-rose-100 text-rose-800 border-rose-200";
+
+            return {
+              id: st.id,
+              name: st.name,
+              type,
+              color,
+              isConversion: !!st.conversion_event || st.stage_type === "conversion" || st.stage_type === "sale" || st.stage_type === "first_contact",
+              conversionType: (st.conversion_event || undefined) as "Lead" | "Agendamento" | "Comparecimento" | "Venda" | undefined,
+            };
+          });
+          setStages(mappedStages);
+        }
+
         setLeads(mappedLeads);
         setConversations(mappedConvs);
         localStorage.setItem("top_leads", JSON.stringify(mappedLeads));

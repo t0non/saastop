@@ -235,24 +235,27 @@ export default function JourneySettingsPage() {
 
       // 3. Upsert stage
       if (editingStage) {
-        await supabase
+        const { error: errStage } = await supabase
           .from("pipeline_stages")
           .update(dbPayload)
           .eq("id", stageId);
+        if (errStage) throw errStage;
       } else {
-        await supabase
+        const { error: errStage } = await supabase
           .from("pipeline_stages")
           .insert([dbPayload]);
+        if (errStage) throw errStage;
       }
 
       // 4. Update keyword triggers (delete existing and insert current list)
-      await supabase
+      const { error: errDel } = await supabase
         .from("keyword_triggers")
         .delete()
         .eq("stage_id", stageId);
+      if (errDel) throw errDel;
 
       if (keywords.length > 0) {
-        await supabase
+        const { error: errIns } = await supabase
           .from("keyword_triggers")
           .insert(keywords.map(k => ({
             stage_id: stageId,
@@ -263,6 +266,7 @@ export default function JourneySettingsPage() {
             ignore_accents: k.ignore_accents,
             active: k.active
           })));
+        if (errIns) throw errIns;
       }
 
       // 5. Reload AppContext stages list
