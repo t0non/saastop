@@ -192,12 +192,13 @@ export default function WhatsAppIntegrationPage() {
           body: JSON.stringify({ method: "qr", use_existing: true })
         });
         const resData = await res.json();
-        if (res.ok && resData.success) {
-          await fetchStatus();
+        if (res.ok && resData.status !== "error") {
+          setQrImageSrc(resData.qrImageSrc || null);
+          setFlowStatus("waiting_qr");
           startStatusPolling();
         } else {
           setFlowStatus("error");
-          setQrError(resData.error || "Erro ao gerar QR Code.");
+          setQrError(resData.message || resData.error || "Erro ao gerar QR Code.");
         }
       } catch {
         setFlowStatus("error");
@@ -306,18 +307,19 @@ export default function WhatsAppIntegrationPage() {
       });
       const data = await res.json();
 
-      if (res.ok && data.success) {
+      if (res.ok && data.status !== "error") {
         if (method === "pairing") {
           setPairCode(data.pairCode || null);
           setFlowStatus("waiting_pair_code");
           startStatusPolling();
         } else {
-          await fetchStatus();
+          setQrImageSrc(data.qrImageSrc || null);
+          setFlowStatus("waiting_qr");
           startStatusPolling();
         }
       } else {
         setFlowStatus("error");
-        setQrError(data.error || "Erro ao iniciar pareamento.");
+        setQrError(data.message || data.error || "Erro ao iniciar pareamento.");
       }
     } catch {
       setFlowStatus("error");

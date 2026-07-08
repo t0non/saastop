@@ -2,90 +2,45 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseStateless } from "@/lib/supabaseStateless";
 
 interface NormalizedStatus {
-  status: "connected" | "connecting" | "disconnected" | "hibernated";
-  phone: string | null;
   instanceName: string | null;
+  status: string | null;
+  qrCode: string | null;
+  pairCode: string | null;
+  connected: boolean;
+  loggedIn: boolean;
+  phone: string | null;
 }
 
 /**
- * Normaliza a resposta de status da UAZAPI para o formato interno do backend.
- * Garante que o frontend nunca dependa diretamente dos detalhes da API da UAZAPI.
+ * Normaliza a resposta de status da UAZAPI conforme a especificação OpenAPI v2.1.1.
  */
-function normalizeUazapiStatusResponse(raw: Record<string, unknown>): NormalizedStatus {
-  const getField = (keys: string[]): unknown => {
-    for (const key of keys) {
-      if (raw[key] !== undefined && raw[key] !== null) return raw[key];
-    }
-    if (raw.data && typeof raw.data === "object") {
-      const nested = raw.data as Record<string, unknown>;
-      for (const key of keys) {
-        if (nested[key] !== undefined && nested[key] !== null) return nested[key];
-      }
-    }
-    return null;
+function normalizeUazapiStatusResponse(raw: unknown): NormalizedStatus {
+  if (!raw) {
+    return {
+      instanceName: null,
+      status: "disconnected",
+      qrCode: null,
+      pairCode: null,
+      connected: false,
+      loggedIn: false,
+      phone: null
+    };
+  }
+
+  const data = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const instance = (data.instance && typeof data.instance === "object" ? data.instance : {}) as Record<string, unknown>;
+  const status = (data.status && typeof data.status === "object" ? data.status : {}) as Record<string, unknown>;
+  const jid = (status.jid && typeof status.jid === "object" ? status.jid : {}) as Record<string, unknown>;
+
+  return {
+    instanceName: typeof instance.name === "string" ? instance.name : null,
+    status: typeof instance.status === "string" ? instance.status : "disconnected",
+    qrCode: typeof instance.qrcode === "string" ? instance.qrcode : null,
+    pairCode: typeof instance.paircode === "string" ? instance.paircode : null,
+    connected: typeof status.connected === "boolean" ? status.connected : false,
+    loggedIn: typeof status.loggedIn === "boolean" ? status.loggedIn : false,
+    phone: typeof jid.user === "string" ? jid.user : null
   };
-
-  const rawStatus = String(getField(["status", "state"]) ?? "").toLowerCase();
-  let status: "connected" | "connecting" | "disconnected" | "hibernated";
-
-  if (rawStatus === "connected" || rawStatus === "open" || rawStatus === "connected_chat") {
-    status = "connected";
-  } else if (rawStatus === "connecting" || rawStatus === "waiting_qr" || rawStatus === "qrcode" || rawStatus === "preparing") {
-    status = "connecting";
-  } else if (rawStatus === "hibernated") {
-    status = "hibernated";
-  } else {
-    status = "disconnected";
-  }
-
-  const rawPhone = getField(["phone", "owner", "number", "phone_normalized"]);
-  const phone = rawPhone !== null ? String(rawPhone) : null;
-
-  const rawName = getField(["instanceName", "instance_name", "name"]);
-  const instanceName = rawName !== null ? String(rawName) : null;
-
-  return { status, phone, instanceName };
-}
-
-/**
- * Sanitiza o corpo da resposta para logs de desenvolvimento, removendo tokens
- * e truncando dados longos como base64.
- */
-function sanitizeBody(bodyStr: string): string {
-  try {
-    const parsed = JSON.parse(bodyStr);
-    if (typeof parsed === "object" && parsed !== null) {
-      const clean = { ...parsed };
-      const sensitiveKeys = [
-        "token", "instance_token", "admin_token", "admintoken", 
-        "password", "secret", "key", "authorization", "bearer"
-      ];
-      
-      const sanitizeObject = (obj: Record<string, unknown>) => {
-        for (const k of Object.keys(obj)) {
-          const val = obj[k];
-          if (sensitiveKeys.includes(k.toLowerCase())) {
-            obj[k] = "[REDACTED]";
-          } else if (typeof val === "string" && val.length > 100) {
-            obj[k] = val.slice(0, 50) + "... [TRUNCATED]";
-          } else if (typeof val === "object" && val !== null) {
-            sanitizeObject(val as Record<string, unknown>);
-          }
-        }
-      };
-      
-      sanitizeObject(clean);
-      return JSON.stringify(clean);
-    }
-  } catch {
-    // Não é JSON
-  }
-
-  let safeStr = bodyStr;
-  if (safeStr.length > 500) {
-    safeStr = safeStr.slice(0, 300) + "... [TRUNCATED]";
-  }
-  return safeStr;
 }
 
 export async function POST(request: NextRequest) {
@@ -109,7 +64,7 @@ export async function POST(request: NextRequest) {
     } catch {
       return NextResponse.json({
         ok: false,
-        code: "PROVIDER_ERROR",
+        code: "INVALID_URL",
         message: "URL inválida ou não permitida."
       }, { status: 400 });
     }
@@ -117,7 +72,7 @@ export async function POST(request: NextRequest) {
     if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
       return NextResponse.json({
         ok: false,
-        code: "PROVIDER_ERROR",
+        code: "INVALID_URL",
         message: "URL inválida ou não permitida."
       }, { status: 400 });
     }
@@ -141,7 +96,7 @@ export async function POST(request: NextRequest) {
     if (!allowedHosts.includes(parsedUrl.hostname.toLowerCase())) {
       return NextResponse.json({
         ok: false,
-        code: "PROVIDER_ERROR",
+        code: "INVALID_URL",
         message: "URL inválida ou não permitida."
       }, { status: 400 });
     }
@@ -225,16 +180,6 @@ export async function POST(request: NextRequest) {
 
       responseBody = await testRes.text();
 
-      // Log em modo de desenvolvimento
-      if (process.env.NODE_ENV === "development") {
-        console.log("[DEV_LOG] UAZAPI Call:", {
-          endpoint: testUrl,
-          status: httpStatus,
-          sanitizedBody: sanitizeBody(responseBody),
-          durationMs,
-        });
-      }
-
       if (!testRes.ok) {
         if (httpStatus === 401 || httpStatus === 403) {
           return NextResponse.json({
@@ -267,7 +212,7 @@ export async function POST(request: NextRequest) {
         }, { status: 400 });
       }
 
-      let jsonBody: Record<string, unknown>;
+      let jsonBody: unknown;
       try {
         jsonBody = JSON.parse(responseBody);
       } catch {
@@ -280,10 +225,22 @@ export async function POST(request: NextRequest) {
 
       const normalized = normalizeUazapiStatusResponse(jsonBody);
 
+      // Log seguro no backend
+      console.log("[UAZAPI_STATUS_LOG]", {
+        endpoint: testUrl,
+        httpStatus,
+        instanceStatus: normalized.status,
+        connected: normalized.connected,
+        loggedIn: normalized.loggedIn,
+        possuiQrCode: !!normalized.qrCode,
+        qrCodeLength: normalized.qrCode ? normalized.qrCode.length : 0,
+        possuiPairCode: !!normalized.pairCode,
+        durationMs
+      });
+
       // 4. Salvar ou atualizar a conexão no banco de dados.
-      // Se o status retornado da UAZAPI for conectado, salvamos como "connected",
-      // caso contrário salvamos como "disconnected" para permitir pareamento posterior.
-      const statusToSave = normalized.status === "connected" ? "connected" : "disconnected";
+      const isConnected = normalized.connected || normalized.loggedIn || normalized.status === "connected";
+      const statusToSave = isConnected ? "connected" : "disconnected";
 
       const { data: existing } = await supabaseStateless
         .from("whatsapp_connections")
@@ -298,7 +255,7 @@ export async function POST(request: NextRequest) {
         instance_token,
         owner_phone: normalized.phone || "",
         status: statusToSave,
-        connected_at: normalized.status === "connected" ? new Date().toISOString() : null,
+        connected_at: isConnected ? new Date().toISOString() : null,
         last_health_check_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -334,15 +291,6 @@ export async function POST(request: NextRequest) {
       const errMessage = typeof errObject?.message === "string" ? errObject.message : String(err);
       const errCode = typeof errObject?.code === "string" ? errObject.code : "";
 
-      if (process.env.NODE_ENV === "development") {
-        console.log("[DEV_LOG] UAZAPI Call Error:", {
-          endpoint: testUrl,
-          status: "Fetch Error",
-          error: errMessage,
-          durationMs,
-        });
-      }
-
       if (errName === "AbortError" || errMessage.includes("timeout")) {
         return NextResponse.json({
           ok: false,
@@ -356,8 +304,8 @@ export async function POST(request: NextRequest) {
       if (isUnreachable) {
         return NextResponse.json({
           ok: false,
-          code: "PROVIDER_ERROR",
-          message: "Servidor inacessível ou offline."
+          code: "INVALID_URL",
+          message: "Servidor inacessível, offline ou URL inválida."
         }, { status: 400 });
       }
 

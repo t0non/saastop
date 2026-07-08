@@ -1,88 +1,61 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { supabaseStateless } from "@/lib/supabaseStateless";
 
-/**
- * GET /api/whatsapp/status
- *
- * Endpoint INTERNO que o frontend consulta via polling.
- * Chama GET {baseUrl}/instance/status com header `token` (UAZAPI v2).
- *
- * Resposta padronizada para o frontend:
- *   { status, qrImageSrc, phone?, message? }
- *
- * O frontend NUNCA chama a UAZAPI diretamente.
- *
- * ERRO ANTERIOR: usava GET /instance/qr?token=... como query param,
- * e tentava adivinhar campos genéricos (qr, qrcode, base64, etc.)
- * sem verificar a resposta real da UAZAPI.
- */
-
-type StatusResponse = {
-  status: "waiting_qr" | "waiting_pair_code" | "connecting" | "connected" | "error";
-  qrImageSrc: string | null;
-  phone?: string;
-  message?: string;
-};
-
-/**
- * Normaliza o valor do QR para uso em <img src>.
- * Não adivinha — trata apenas os formatos confirmados.
- */
-function normalizeQrSrc(value: unknown): string | null {
-  if (!value || typeof value !== "string" || value.trim() === "") {
-    return null;
-  }
-
-  const v = value.trim();
-
-  // CASO 1: já é data URI completa
-  if (v.startsWith("data:image/")) {
-    return v;
-  }
-
-  // CASO 4: URL HTTPS válida
-  if (v.startsWith("https://") || v.startsWith("http://")) {
-    return v;
-  }
-
-  // CASO 2: base64 puro (sem prefixo) — mínimo 200 chars para ser imagem real
-  if (v.length > 200 && /^[A-Za-z0-9+/=\r\n]+$/.test(v.slice(0, 100))) {
-    return `data:image/png;base64,${v}`;
-  }
-
-  // CASO 3: conteúdo textual para gerar QR (não é imagem)
-  // Retorna null — será tratado no frontend se necessário
-  return null;
+interface NormalizedStatus {
+  instanceName: string | null;
+  status: string | null;
+  qrCode: string | null;
+  pairCode: string | null;
+  connected: boolean;
+  loggedIn: boolean;
+  phone: string | null;
 }
 
 /**
- * Log diagnóstico sanitizado da resposta da UAZAPI.
- * Não loga token, admin token, secrets, nem base64 completo.
+ * Normaliza a resposta de status da UAZAPI conforme a especificação OpenAPI v2.1.1.
  */
-function logStatusShape(data: Record<string, unknown>) {
-  const topKeys = Object.keys(data ?? {});
-
-  // Encontra o campo que parece conter o QR
-  const qrCandidates: Record<string, { type: string; length?: number; prefix?: string }> = {};
-  for (const key of topKeys) {
-    const val = data[key];
-    if (typeof val === "string" && val.length > 50) {
-      qrCandidates[key] = {
-        type: "string",
-        length: val.length,
-        prefix: val.slice(0, 30),
-      };
-    }
+function normalizeUazapiStatusResponse(raw: unknown): NormalizedStatus {
+  if (!raw) {
+    return {
+      instanceName: null,
+      status: "disconnected",
+      qrCode: null,
+      pairCode: null,
+      connected: false,
+      loggedIn: false,
+      phone: null
+    };
   }
 
-  console.log("[UAZAPI_STATUS_SHAPE]", {
-    keys: topKeys,
-    status: data.status ?? data.state ?? "N/A",
-    qrCandidates,
-  });
+  const data = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const instance = (data.instance && typeof data.instance === "object" ? data.instance : {}) as Record<string, unknown>;
+  const status = (data.status && typeof data.status === "object" ? data.status : {}) as Record<string, unknown>;
+  const jid = (status.jid && typeof status.jid === "object" ? status.jid : {}) as Record<string, unknown>;
+
+  return {
+    instanceName: typeof instance.name === "string" ? instance.name : null,
+    status: typeof instance.status === "string" ? instance.status : "disconnected",
+    qrCode: typeof instance.qrcode === "string" ? instance.qrcode : null,
+    pairCode: typeof instance.paircode === "string" ? instance.paircode : null,
+    connected: typeof status.connected === "boolean" ? status.connected : false,
+    loggedIn: typeof status.loggedIn === "boolean" ? status.loggedIn : false,
+    phone: typeof jid.user === "string" ? jid.user : null
+  };
 }
 
-export async function GET(_request: NextRequest) {
+/**
+ * Normaliza a imagem do QR Code para incluir o prefixo base64 se necessário.
+ */
+function formatQrCode(qrRaw: string | null | undefined): string | null {
+  if (!qrRaw) return null;
+  const q = qrRaw.trim();
+  if (q.startsWith("data:image/")) {
+    return q;
+  }
+  return `data:image/png;base64,${q}`;
+}
+
+export async function GET() {
   try {
     const orgId = "empresa-1";
 
@@ -95,27 +68,27 @@ export async function GET(_request: NextRequest) {
     if (error || !connection) {
       return NextResponse.json({
         status: "error",
-        qrImageSrc: null,
-        message: "Nenhuma conexão configurada.",
-      } satisfies StatusResponse, { status: 404 });
+        code: "INSTANCE_NOT_FOUND",
+        message: "Nenhuma conexão configurada para a organização."
+      }, { status: 404 });
     }
 
     // ── Já conectado no banco ──
     if (connection.status === "connected") {
       return NextResponse.json({
         status: "connected",
-        qrImageSrc: null,
-      } satisfies StatusResponse);
+        phone: ""
+      });
     }
 
-    // ── Modo simulado (token gerado localmente) ──
     const isDemoMode = process.env.NEXT_PUBLIC_ENABLE_MOCK_DATA === "true";
     const isSimulated =
       !connection.instance_token ||
       connection.instance_token.startsWith("token-gen-");
 
+    // ── Modo simulado (demo) ──
     if (isDemoMode || isSimulated) {
-      // Agenda transição automática para "connected" após 10s
+      // Agenda transição automática para conectado após 10 segundos
       setTimeout(async () => {
         try {
           await supabaseStateless
@@ -134,39 +107,37 @@ export async function GET(_request: NextRequest) {
       if (connection.status === "waiting_pair_code") {
         return NextResponse.json({
           status: "waiting_pair_code",
-          qrImageSrc: null,
-        } satisfies StatusResponse);
+          pairCode: "WXYZ-1234"
+        });
+      } else {
+        const demoQr =
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAMAAABrrFhUAAAA" +
+          "M1BMVEUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAjN" +
+          "pMkAAAAQdFJOUwAQIDBAUGBwgI+fr7/P3+8PE0k2AAAAuElEQVR42u3BMQEAAAABIKf/pzUF" +
+          "0AoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADgHQAAAO" +
+          "ABAQAAAAAAAAAAAAAAAAAAAAAAAB4AAADgAQEAAAAAAAAAAAAAAAAAAAAAAAAeAAAA4AEBAAAA" +
+          "AAAAAAAAAAAAAAAAAAB4AAAAPAAAAOANOwAEGAAB6xIVmgAAAABJRU5ErkJggg==";
+
+        return NextResponse.json({
+          status: "waiting_qr",
+          qrImageSrc: demoQr
+        });
       }
-
-      // QR de demonstração — imagem PNG válida e renderizável
-      const demoQr =
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAMAAABrrFhUAAAA" +
-        "M1BMVEUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAjN" +
-        "pMkAAAAQdFJOUwAQIDBAUGBwgI+fr7/P3+8PE0k2AAAAuElEQVR42u3BMQEAAAABIKf/pzUF" +
-        "0AoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADgHQAAAO" +
-        "ABAQAAAAAAAAAAAAAAAAAAAAAAAB4AAADgAQEAAAAAAAAAAAAAAAAAAAAAAAAeAAAA4AEBAAAA" +
-        "AAAAAAAAAAAAAAAAAAB4AAAAPAAAAOANOwAEGAAB6xIVmgAAAABJRU5ErkJggg==";
-
-      return NextResponse.json({
-        status: "waiting_qr",
-        qrImageSrc: demoQr,
-      } satisfies StatusResponse);
     }
 
     // ── Consulta real: GET {baseUrl}/instance/status ──
     if (!connection.base_url || !connection.instance_token) {
       return NextResponse.json({
         status: "error",
-        qrImageSrc: null,
-        message: "Configuração incompleta: base_url ou token ausentes.",
-      } satisfies StatusResponse, { status: 400 });
+        code: "PROVIDER_ERROR",
+        message: "Configuração incompleta: base_url ou token ausentes."
+      }, { status: 400 });
     }
 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-      // UAZAPI v2: autenticação via header `token`
       const res = await fetch(`${connection.base_url}/instance/status`, {
         method: "GET",
         headers: {
@@ -177,95 +148,81 @@ export async function GET(_request: NextRequest) {
       clearTimeout(timeoutId);
 
       if (!res.ok) {
-        console.warn("[UAZAPI_STATUS] HTTP", res.status, await res.text().catch(() => ""));
+        let code = "PROVIDER_ERROR";
+        if (res.status === 401 || res.status === 403) code = "INVALID_TOKEN";
+        else if (res.status === 404) code = "INSTANCE_NOT_FOUND";
+
         return NextResponse.json({
           status: "error",
-          qrImageSrc: null,
-          message: `UAZAPI retornou HTTP ${res.status}.`,
-        } satisfies StatusResponse, { status: 502 });
+          code,
+          message: `UAZAPI retornou HTTP ${res.status}.`
+        }, { status: 400 });
       }
 
-      const raw = await res.json() as Record<string, unknown>;
+      const raw = await res.json();
+      const normalized = normalizeUazapiStatusResponse(raw);
 
-      // Log diagnóstico temporário (sem token, sem base64 completo)
-      logStatusShape(raw);
+      // Log seguro no backend
+      console.log("[UAZAPI_POLLING_STATUS_LOG]", {
+        endpoint: `${connection.base_url}/instance/status`,
+        httpStatus: res.status,
+        instanceStatus: normalized.status,
+        connected: normalized.connected,
+        loggedIn: normalized.loggedIn,
+        possuiQrCode: !!normalized.qrCode,
+        qrCodeLength: normalized.qrCode ? normalized.qrCode.length : 0,
+        possuiPairCode: !!normalized.pairCode,
+      });
 
-      // ── Detectar status da UAZAPI ──
-      const uazapiStatus = String(raw.status ?? raw.state ?? "").toLowerCase();
+      const isConnected = normalized.connected || normalized.loggedIn || normalized.status === "connected";
 
-      if (uazapiStatus === "connected" || uazapiStatus === "open") {
-        // Atualizar banco
+      if (isConnected) {
+        const cleanPhone = normalized.phone ? normalized.phone.split("@")[0].replace(/\D/g, "") : "";
+        
         await supabaseStateless
           .from("whatsapp_connections")
           .update({
             status: "connected",
-            owner_phone: String(raw.phone ?? raw.owner ?? raw.number ?? ""),
+            owner_phone: cleanPhone,
             connected_at: new Date().toISOString(),
           })
           .eq("id", connection.id);
 
         return NextResponse.json({
           status: "connected",
-          qrImageSrc: null,
-          phone: String(raw.phone ?? raw.owner ?? raw.number ?? ""),
-        } satisfies StatusResponse);
+          phone: cleanPhone
+        });
       }
 
-      if (uazapiStatus === "connecting") {
-        return NextResponse.json({
-          status: "connecting",
-          qrImageSrc: null,
-        } satisfies StatusResponse);
-      }
-
+      // Se o fluxo ativo no banco for Código de Pareamento
       if (connection.status === "waiting_pair_code") {
         return NextResponse.json({
           status: "waiting_pair_code",
-          qrImageSrc: null,
-        } satisfies StatusResponse);
+          pairCode: normalized.pairCode || ""
+        });
       }
 
-      // ── Extrair QR da resposta real ──
-      // Tenta todos os campos conhecidos da UAZAPI v2 — O CAMPO REAL será
-      // registrado pelo logStatusShape acima para diagnóstico
-      const qrRaw =
-        raw.qrcode ??
-        raw.qr ??
-        raw.qr_code ??
-        raw.base64 ??
-        raw.urlcode ??
-        raw.pairingCode ??
-        // Aninhado em data
-        (raw.data && typeof raw.data === "object"
-          ? (raw.data as Record<string, unknown>).qrcode ??
-            (raw.data as Record<string, unknown>).qr ??
-            (raw.data as Record<string, unknown>).base64
-          : undefined);
-
-      const qrImageSrc = normalizeQrSrc(qrRaw);
-
-      if (qrImageSrc) {
+      // Se o fluxo ativo for QR Code
+      const formattedQr = formatQrCode(normalized.qrCode);
+      if (formattedQr) {
         return NextResponse.json({
           status: "waiting_qr",
-          qrImageSrc,
-        } satisfies StatusResponse);
+          qrImageSrc: formattedQr
+        });
       }
 
-      // QR não disponível ainda (instância iniciando)
       return NextResponse.json({
-        status: "connecting",
-        qrImageSrc: null,
-        message: "Aguardando geração do QR Code pela UAZAPI...",
-      } satisfies StatusResponse);
+        status: "connecting"
+      });
 
     } catch (fetchErr) {
       const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       console.error("[UAZAPI_STATUS] Erro na chamada:", msg);
       return NextResponse.json({
         status: "error",
-        qrImageSrc: null,
-        message: "Falha ao comunicar com a UAZAPI.",
-      } satisfies StatusResponse, { status: 502 });
+        code: "PROVIDER_ERROR",
+        message: "Falha ao comunicar com a UAZAPI."
+      }, { status: 502 });
     }
 
   } catch (err) {
@@ -273,8 +230,8 @@ export async function GET(_request: NextRequest) {
     console.error("[STATUS_ROUTE] Erro interno:", msg);
     return NextResponse.json({
       status: "error",
-      qrImageSrc: null,
-      message: "Erro interno ao verificar status.",
-    } satisfies StatusResponse, { status: 500 });
+      code: "PROVIDER_ERROR",
+      message: "Erro interno ao verificar status."
+    }, { status: 500 });
   }
 }

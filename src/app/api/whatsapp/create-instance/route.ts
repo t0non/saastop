@@ -1,55 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseStateless } from "@/lib/supabaseStateless";
 
-/**
- * POST /api/whatsapp/create-instance
- *
- * Fluxo UAZAPI v2:
- *   1. Se UAZAPI_ADMIN_TOKEN existe → POST /instance/create (cria instância)
- *   2. POST /instance/connect com header `token` e body {} (inicia pareamento QR)
- *   3. Salva/atualiza registro em whatsapp_connections com status "waiting_qr"
- *
- * ERRO ANTERIOR: usava GET /instance/qr?token=... como query param.
- * A UAZAPI v2 espera autenticação via header `token`.
- */
-/**
- * Normaliza o código de pareamento retornado pela UAZAPI.
- * Faz uma busca recursiva para encontrar qualquer padrão de 8 caracteres alfanuméricos.
- */
-function normalizeUazapiPairCodeResponse(raw: unknown): string | null {
-  if (!raw) return null;
+interface NormalizedStatus {
+  instanceName: string | null;
+  status: string | null;
+  qrCode: string | null;
+  pairCode: string | null;
+  connected: boolean;
+  loggedIn: boolean;
+  phone: string | null;
+}
 
-  const commonKeys = ["code", "pairingCode", "pairCode", "pairing_code"];
-  if (typeof raw === "object" && raw !== null) {
-    const obj = raw as Record<string, unknown>;
-    for (const key of commonKeys) {
-      if (typeof obj[key] === "string") {
-        const val = obj[key] as string;
-        const clean = val.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-        if (clean.length === 8) {
-          return `${clean.slice(0, 4)}-${clean.slice(4)}`;
-        }
-      }
-    }
+/**
+ * Normaliza a resposta de status da UAZAPI conforme a especificação OpenAPI v2.1.1.
+ */
+function normalizeUazapiStatusResponse(raw: unknown): NormalizedStatus {
+  if (!raw) {
+    return {
+      instanceName: null,
+      status: "disconnected",
+      qrCode: null,
+      pairCode: null,
+      connected: false,
+      loggedIn: false,
+      phone: null
+    };
   }
 
-  let foundCode: string | null = null;
-  const search = (node: unknown) => {
-    if (foundCode) return;
-    if (typeof node === "string") {
-      const clean = node.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-      if (clean.length === 8) {
-        foundCode = `${clean.slice(0, 4)}-${clean.slice(4)}`;
-      }
-    } else if (typeof node === "object" && node !== null) {
-      for (const val of Object.values(node)) {
-        search(val);
-      }
-    }
-  };
+  const data = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const instance = (data.instance && typeof data.instance === "object" ? data.instance : {}) as Record<string, unknown>;
+  const status = (data.status && typeof data.status === "object" ? data.status : {}) as Record<string, unknown>;
+  const jid = (status.jid && typeof status.jid === "object" ? status.jid : {}) as Record<string, unknown>;
 
-  search(raw);
-  return foundCode;
+  return {
+    instanceName: typeof instance.name === "string" ? instance.name : null,
+    status: typeof instance.status === "string" ? instance.status : "disconnected",
+    qrCode: typeof instance.qrcode === "string" ? instance.qrcode : null,
+    pairCode: typeof instance.paircode === "string" ? instance.paircode : null,
+    connected: typeof status.connected === "boolean" ? status.connected : false,
+    loggedIn: typeof status.loggedIn === "boolean" ? status.loggedIn : false,
+    phone: typeof jid.user === "string" ? jid.user : null
+  };
+}
+
+/**
+ * Normaliza a imagem do QR Code para incluir o prefixo base64 se necessário.
+ */
+function formatQrCode(qrRaw: string | null | undefined): string | null {
+  if (!qrRaw) return null;
+  const q = qrRaw.trim();
+  if (q.startsWith("data:image/")) {
+    return q;
+  }
+  return `data:image/png;base64,${q}`;
 }
 
 export async function POST(request: NextRequest) {
@@ -72,7 +75,11 @@ export async function POST(request: NextRequest) {
         .maybeSingle();
 
       if (!existingConn || !existingConn.instance_token) {
-        return NextResponse.json({ error: "Nenhuma conexão existente configurada para parear." }, { status: 400 });
+        return NextResponse.json({
+          status: "error",
+          code: "PROVIDER_ERROR",
+          message: "Nenhuma conexão existente configurada para parear."
+        }, { status: 400 });
       }
 
       baseUrl = existingConn.base_url || baseUrl;
@@ -86,20 +93,22 @@ export async function POST(request: NextRequest) {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${adminToken}`
+              "admintoken": adminToken
             },
             body: JSON.stringify({
-              instanceName,
-              token: generatedToken
+              name: instanceName
             })
           });
 
           if (createRes.ok) {
             const createData = await createRes.json();
-            if (createData.token) {
-              generatedToken = createData.token;
+            const returnedToken = createData.token ?? createData.instance?.token ?? createData.instance_token;
+            if (returnedToken) {
+              generatedToken = returnedToken;
             }
-            console.log("[UAZAPI_CREATE] Instância criada:", { instanceName });
+            console.log("[UAZAPI_CREATE] Instância criada com sucesso:", { instanceName });
+          } else {
+            console.warn("[UAZAPI_CREATE] Instância não criada:", createRes.status);
           }
         } catch (err) {
           console.warn("[UAZAPI_CREATE] Falha ao criar instância (modo simulado será ativado):", err instanceof Error ? err.message : err);
@@ -110,11 +119,20 @@ export async function POST(request: NextRequest) {
     isSimulated = generatedToken.startsWith("token-gen-") || process.env.NEXT_PUBLIC_ENABLE_MOCK_DATA === "true";
 
     // ── Passo 2: Iniciar conexão via POST /instance/connect ──
+    let qrImageSrc: string | null = null;
     let pairCode: string | null = null;
 
     if (isSimulated) {
       if (method === "pairing") {
         pairCode = "WXYZ-1234";
+      } else {
+        qrImageSrc =
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAMAAABrrFhUAAAA" +
+          "M1BMVEUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAjN" +
+          "pMkAAAAQdFJOUwAQIDBAUGBwgI+fr7/P3+8PE0k2AAAAuElEQVR42u3BMQEAAAABIKf/pzUF" +
+          "0AoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADgHQAAAO" +
+          "ABAQAAAAAAAAAAAAAAAAAAAAAAAB4AAADgAQEAAAAAAAAAAAAAAAAAAAAAAAAeAAAA4AEBAAAA" +
+          "AAAAAAAAAAAAAAAAAAB4AAAAPAAAAOANOwAEGAAB6xIVmgAAAABJRU5ErkJggg==";
       }
     } else {
       try {
@@ -137,33 +155,69 @@ export async function POST(request: NextRequest) {
         });
         clearTimeout(timeoutId);
 
-        const connectData = await connectRes.json() as Record<string, unknown>;
-
-        // Log diagnóstico sanitizado (sem tokens/secrets)
-        console.log("[UAZAPI_CONNECT_RESPONSE]", {
-          httpStatus: connectRes.status,
-          keys: Object.keys(connectData),
-        });
-
         if (!connectRes.ok) {
           return NextResponse.json({
-            error: `Erro ao conectar UAZAPI: HTTP ${connectRes.status}`
+            status: "error",
+            code: "PROVIDER_ERROR",
+            message: `Erro ao conectar UAZAPI: HTTP ${connectRes.status}`
           }, { status: 400 });
         }
 
+        // Depois consultar: GET {baseUrl}/instance/status para obter QR/Pair Code
+        const statusController = new AbortController();
+        const statusTimeoutId = setTimeout(() => statusController.abort(), 8000);
+
+        const statusRes = await fetch(`${baseUrl}/instance/status`, {
+          method: "GET",
+          headers: {
+            "token": generatedToken,
+          },
+          signal: statusController.signal,
+        });
+        clearTimeout(statusTimeoutId);
+
+        if (!statusRes.ok) {
+          return NextResponse.json({
+            status: "error",
+            code: "PROVIDER_ERROR",
+            message: `Erro ao consultar status da instância: HTTP ${statusRes.status}`
+          }, { status: 400 });
+        }
+
+        const statusData = await statusRes.json();
+        const normalized = normalizeUazapiStatusResponse(statusData);
+
+        // Log seguro no backend
+        console.log("[UAZAPI_CONNECT_STATUS_LOG]", {
+          endpoint: `${baseUrl}/instance/status`,
+          httpStatus: statusRes.status,
+          instanceStatus: normalized.status,
+          connected: normalized.connected,
+          loggedIn: normalized.loggedIn,
+          possuiQrCode: !!normalized.qrCode,
+          qrCodeLength: normalized.qrCode ? normalized.qrCode.length : 0,
+          possuiPairCode: !!normalized.pairCode,
+        });
+
         if (method === "pairing") {
-          pairCode = normalizeUazapiPairCodeResponse(connectData);
+          pairCode = normalized.pairCode;
           if (!pairCode) {
             return NextResponse.json({
-              error: "Código de pareamento não retornado pela UAZAPI."
+              status: "error",
+              code: "PROVIDER_ERROR",
+              message: "Código de pareamento não retornado pela UAZAPI."
             }, { status: 400 });
           }
+        } else {
+          qrImageSrc = formatQrCode(normalized.qrCode);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn("[UAZAPI_CONNECT] Falha ao chamar /instance/connect:", msg);
+        console.warn("[UAZAPI_CONNECT] Falha ao conectar:", msg);
         return NextResponse.json({
-          error: `Falha na chamada de pareamento: ${msg}`
+          status: "error",
+          code: "PROVIDER_ERROR",
+          message: `Falha na chamada de pareamento: ${msg}`
         }, { status: 500 });
       }
     }
@@ -191,41 +245,43 @@ export async function POST(request: NextRequest) {
       connectionPayload.connection_name = "WhatsApp - Nova Conexão";
     }
 
-    let connection;
     if (existing) {
-      const { data, error } = await supabaseStateless
+      const { error } = await supabaseStateless
         .from("whatsapp_connections")
         .update(connectionPayload)
-        .eq("id", existing.id)
-        .select()
-        .single();
+        .eq("id", existing.id);
 
       if (error) throw error;
-      connection = data;
     } else {
-      const { data, error } = await supabaseStateless
+      const { error } = await supabaseStateless
         .from("whatsapp_connections")
         .insert([{
           organization_id: orgId,
           provider: "uazapi",
           ...connectionPayload
-        }])
-        .select()
-        .single();
+        }]);
 
       if (error) throw error;
-      connection = data;
     }
 
-    return NextResponse.json({
-      success: true,
-      instanceName: connection.instance_name,
-      status: connection.status,
-      pairCode: pairCode || undefined,
-    });
+    if (method === "pairing") {
+      return NextResponse.json({
+        status: "waiting_pair_code",
+        pairCode: pairCode || ""
+      });
+    } else {
+      return NextResponse.json({
+        status: "waiting_qr",
+        qrImageSrc: qrImageSrc || ""
+      });
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : JSON.stringify(err);
     console.error("[CREATE_INSTANCE] Erro:", msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({
+      status: "error",
+      code: "PROVIDER_ERROR",
+      message: msg
+    }, { status: 500 });
   }
 }
