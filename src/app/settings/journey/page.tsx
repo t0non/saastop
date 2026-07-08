@@ -314,7 +314,10 @@ export default function JourneySettingsPage() {
       resetForm();
     } catch (err) {
       console.error("Error saving stage:", err);
-      const msg = err instanceof Error ? err.message : String(err);
+      const errObj = err as Record<string, unknown>;
+      const msg = typeof err === "object" && err !== null
+        ? String(errObj.message || errObj.details || JSON.stringify(err))
+        : String(err);
       alert(`Ocorreu um erro ao salvar as configurações da etapa: ${msg}`);
     } finally {
       setLoading(false);
