@@ -4,7 +4,7 @@ export type Channel = 'Google Ads' | 'Google Search' | 'Google Maps' | 'Instagra
 export type ConversionType = 'Lead' | 'Agendamento' | 'Comparecimento' | 'Venda';
 export type AttributionConfidence = 'Confirmada' | 'Confirmada pela plataforma' | 'Inferida' | 'Desconhecida';
 export type MessageDirection = 'inbound' | 'outbound';
-export type LeadStatus = 'Novo Lead' | 'Em Atendimento' | 'Interessado' | 'Agendado' | 'Compareceu' | 'Venda' | 'Perdido';
+export type LeadStatus = string;
 
 export interface CompanyIntegrations {
   whatsappConnected: boolean;

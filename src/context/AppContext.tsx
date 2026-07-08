@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Company, Lead, Conversation, TrackingLink, AutomationRule, ConversionEvent, LeadStatus, Source, Medium, Message, StageHistory, ConversionType, MessageDirection } from '../types';
+import { Company, Lead, Conversation, TrackingLink, AutomationRule, ConversionEvent, LeadStatus, Source, Medium, Message, StageHistory, ConversionType, MessageDirection, PipelineStageConfig } from '../types';
 import { defaultStages } from '../utils/mockData';
 
 const defaultCompanies: Company[] = [
@@ -40,6 +40,7 @@ interface AppContextProps {
   trackingLinks: TrackingLink[];
   automationRules: AutomationRule[];
   conversions: ConversionEvent[];
+  stages: PipelineStageConfig[];
   setSelectedCompanyId: (id: string) => void;
   setSelectedPeriod: (period: string) => void;
   createLead: (lead: Lead) => void;
@@ -61,6 +62,7 @@ interface AppContextProps {
   createAutomationRule: (rule: Omit<AutomationRule, 'id'>) => void;
   sendConversionToAdPlatform: (conversionId: string, platform: 'Google' | 'Meta') => void;
   restoreDemoData: () => void;
+  setStages: React.Dispatch<React.SetStateAction<PipelineStageConfig[]>>;
 }
 
 const AppContext = createContext<AppContextProps | undefined>(undefined);
@@ -76,6 +78,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [trackingLinks, setTrackingLinks] = useState<TrackingLink[]>([]);
   const [automationRules, setAutomationRules] = useState<AutomationRule[]>([]);
   const [conversions, setConversions] = useState<ConversionEvent[]>([]);
+  const [stages, setStages] = useState<PipelineStageConfig[]>(defaultStages);
 
   // Carregar dados iniciais no cliente
   useEffect(() => {
@@ -170,6 +173,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           value?: number;
           temperature?: 'Frio' | 'Morno' | 'Quente';
           contact_id: string;
+          source?: string;
           contact?: {
             name: string;
             phone_normalized: string;
@@ -216,6 +220,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           revenue: Number(item.revenue || 0),
           value: Number(item.value || 0),
           temperature: item.temperature || "Morno",
+          trackingSession: item.source ? {
+            id: `session-${item.id}`,
+            source: item.source as Source,
+            medium: 'cpc',
+            campaign: 'Sem Campanha',
+            landingPage: '',
+            timestamp: item.created_at,
+          } : undefined,
           history: [
             {
               id: `hist-${item.id}`,
@@ -747,6 +759,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       trackingLinks,
       automationRules,
       conversions,
+      stages,
       setSelectedCompanyId,
       setSelectedPeriod,
       createLead,
@@ -758,7 +771,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updateAutomationRuleStatus,
       createAutomationRule,
       sendConversionToAdPlatform,
-      restoreDemoData
+      restoreDemoData,
+      setStages
     }}>
       {children}
     </AppContext.Provider>

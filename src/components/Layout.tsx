@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { getBrowserClient, isSupabaseConfigured } from '@/lib/supabase';
@@ -8,7 +8,7 @@ import { useApp } from '@/context/AppContext';
 import { 
   LayoutDashboard, Users, Route, Link2, Kanban, RefreshCw, BarChart3, 
   Share2, Zap, MessageSquare, Settings, Menu, X, Bell, User, CheckCircle2,
-  RefreshCcw, AlertCircle, Building2, Play, LogOut
+  RefreshCcw, AlertCircle, Building2, Play, LogOut, QrCode
 } from 'lucide-react';
 import SimulatorDrawer from './SimulatorDrawer';
 
@@ -27,6 +27,22 @@ export default function Layout({ children }: LayoutProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [simulatorOpen, setSimulatorOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [whatsappStatus, setWhatsappStatus] = useState<string>("not_configured");
+
+  useEffect(() => {
+    async function checkWhatsApp() {
+      try {
+        const res = await fetch("/api/whatsapp/connection");
+        if (res.ok) {
+          const data = await res.json();
+          setWhatsappStatus(data.status || "not_configured");
+        }
+      } catch (e) {
+        console.warn("Could not check WhatsApp status:", e);
+      }
+    }
+    checkWhatsApp();
+  }, [selectedCompanyId]);
 
   const menuItems = [
     { name: 'Visão Geral', href: '/dashboard', icon: LayoutDashboard },
@@ -38,11 +54,12 @@ export default function Layout({ children }: LayoutProps) {
     { name: 'Relatórios', href: '/reports', icon: BarChart3 },
     { name: 'Origens (Atribuição)', href: '/attribution', icon: Share2 },
     { name: 'Automações', href: '/automations', icon: Zap },
-    { name: 'Inbox (Chat)', href: '/inbox', icon: MessageSquare },
+    { name: 'Conversas', href: '/conversations', icon: MessageSquare },
   ];
 
   const settingsItems = [
-    { name: 'Estágios da Jornada', href: '/settings/journey', icon: Route },
+    { name: 'Jornada de Compra', href: '/settings/journey', icon: Route },
+    { name: 'Integração WhatsApp', href: '/settings/integrations/whatsapp', icon: QrCode },
     { name: 'Empresa & Integrações', href: '/settings/company', icon: Settings },
   ];
 
@@ -207,13 +224,30 @@ export default function Layout({ children }: LayoutProps) {
             </div>
 
             {/* WhatsApp Connection Status Indicator */}
-            <div className="flex items-center gap-1.5 bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full text-xs font-medium border border-emerald-100 select-none">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="hidden sm:inline">WhatsApp</span> Conectado
-            </div>
+            {whatsappStatus === "connected" ? (
+              <div className="flex items-center gap-1.5 bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full text-xs font-medium border border-emerald-100 select-none">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span className="hidden sm:inline">WhatsApp</span> Conectado
+              </div>
+            ) : whatsappStatus === "waiting_qr" || whatsappStatus === "connecting" ? (
+              <div className="flex items-center gap-1.5 bg-amber-50 text-amber-700 px-2.5 py-1 rounded-full text-xs font-medium border border-amber-100 select-none">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                </span>
+                Aguardando QR
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 bg-rose-50 text-rose-700 px-2.5 py-1 rounded-full text-xs font-medium border border-rose-100 select-none">
+                <span className="relative flex h-2 w-2">
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                </span>
+                WhatsApp Desconectado
+              </div>
+            )}
 
             {/* Notifications Panel Trigger */}
             <div className="relative">

@@ -23,6 +23,17 @@ export default function InboxPage() {
   } = useApp();
 
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const queryId = params.get("leadId") || params.get("id");
+      if (queryId) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSelectedLeadId(queryId);
+      }
+    }
+  }, []);
   const [newText, setNewText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 

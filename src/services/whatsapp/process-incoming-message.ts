@@ -1,4 +1,5 @@
 import { NormalizedMessage } from "../../integrations/uazapi/normalize-message";
+import { processKeywordTriggersForMessage } from "./keyword-trigger-processor";
 import { supabaseStateless } from "../../lib/supabaseStateless";
 import * as contactsRepo from "../../repositories/contactsRepository";
 import * as conversationsRepo from "../../repositories/conversationsRepository";
@@ -156,6 +157,9 @@ export async function processIncomingMessage(
       });
     }
   }
+
+  // 8. Process Keyword Triggers dynamically
+  await processKeywordTriggersForMessage(organizationId, contact.id, body, direction);
 
   return { success: true };
 }
