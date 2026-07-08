@@ -3,19 +3,22 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getBrowserClient, isSupabaseConfigured } from '@/lib/supabase';
-import { Lock, Mail, ArrowRight, AlertCircle, Loader2, Share2 } from 'lucide-react';
+import { Lock, Mail, ArrowRight, AlertCircle, Loader2, Share2, CheckCircle2 } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setSuccessMessage(null);
 
     // Se o Supabase não estiver configurado, simula um login e redireciona (modo mock)
     if (!isSupabaseConfigured) {
@@ -28,21 +31,50 @@ export default function LoginPage() {
 
     try {
       const supabase = getBrowserClient();
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
 
-      if (signInError) {
-        setError(signInError.message);
-        setLoading(false);
-        return;
+      if (isRegistering) {
+        // Fluxo de Cadastro (Sign Up)
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email,
+          password,
+        });
+
+        if (signUpError) {
+          setError(signUpError.message);
+          setLoading(false);
+          return;
+        }
+
+        if (data.session) {
+          // Logado automaticamente (confirmação de email desligada no Supabase)
+          setSuccessMessage('Cadastro realizado com sucesso! Redirecionando...');
+          setTimeout(() => {
+            router.push('/dashboard');
+            router.refresh();
+          }, 1000);
+        } else {
+          // Confirmação de email ligada no Supabase
+          setSuccessMessage('Cadastro realizado com sucesso! Verifique seu e-mail para confirmar a conta.');
+          setLoading(false);
+        }
+      } else {
+        // Fluxo de Login
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+
+        if (signInError) {
+          setError(signInError.message);
+          setLoading(false);
+          return;
+        }
+
+        router.push('/dashboard');
+        router.refresh(); // Importante para o middleware pegar os cookies
       }
-
-      router.push('/dashboard');
-      router.refresh(); // Importante para o middleware pegar os cookies
-    } catch (err) {
-      setError('Ocorreu um erro ao tentar fazer login.');
+    } catch {
+      setError('Ocorreu um erro ao tentar processar sua solicitação.');
       setLoading(false);
     }
   };
@@ -66,7 +98,9 @@ export default function LoginPage() {
               Top<span className="text-emerald-400">Attribution</span>
             </h1>
             <p className="text-slate-400 text-sm mt-2 text-center">
-              Faça login para acessar o painel de rastreamento de leads.
+              {isRegistering 
+                ? 'Preencha os campos abaixo para criar sua conta.' 
+                : 'Faça login para acessar o painel de rastreamento de leads.'}
             </p>
           </div>
 
@@ -86,7 +120,14 @@ export default function LoginPage() {
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-4">
+          {successMessage && (
+            <div className="mb-6 bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 flex gap-3 text-emerald-400 text-sm font-medium">
+              <CheckCircle2 className="h-5 w-5 shrink-0" />
+              <p>{successMessage}</p>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">
                 E-mail
@@ -134,12 +175,30 @@ export default function LoginPage() {
                 <Loader2 className="h-5 w-5 animate-spin" />
               ) : (
                 <>
-                  Entrar no Painel
+                  {isRegistering ? 'Criar Minha Conta' : 'Entrar no Painel'}
                   <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
                 </>
               )}
             </button>
           </form>
+
+          {isSupabaseConfigured && (
+            <div className="mt-6 text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRegistering(!isRegistering);
+                  setError(null);
+                  setSuccessMessage(null);
+                }}
+                className="text-xs text-emerald-400 hover:text-emerald-300 font-medium transition-colors outline-none"
+              >
+                {isRegistering 
+                  ? 'Já possui uma conta? Faça login' 
+                  : 'Não possui uma conta? Cadastre-se aqui'}
+              </button>
+            </div>
+          )}
           
         </div>
         
