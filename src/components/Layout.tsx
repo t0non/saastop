@@ -47,9 +47,9 @@ export default function Layout({ children }: LayoutProps) {
   ];
 
   const handleReset = () => {
-    if (confirm('Deseja restaurar todos os dados de demonstração padrão? Isso limpará suas alterações recentes.')) {
+    if (confirm('Deseja limpar todos os dados cadastrados? Isso apagará todos os leads, conversas, links e automações.')) {
       restoreDemoData();
-      alert('Dados restaurados com sucesso!');
+      alert('Todos os dados foram limpos com sucesso!');
       window.location.reload();
     }
   };
@@ -147,7 +147,7 @@ export default function Layout({ children }: LayoutProps) {
             className="flex items-center justify-center gap-2 w-full px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded-lg text-xs font-medium transition-all"
           >
             <RefreshCcw className="h-3 w-3" />
-            Restaurar Demo
+            Limpar Todos os Dados
           </button>
           
           <button
@@ -372,7 +372,7 @@ export default function Layout({ children }: LayoutProps) {
                 className="flex items-center justify-center gap-2 w-full px-3 py-2 bg-slate-850 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-lg text-xs font-medium transition-all"
               >
                 <RefreshCcw className="h-3 w-3" />
-                Restaurar Demo
+                Limpar Todos os Dados
               </button>
 
               <button

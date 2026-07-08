@@ -2,7 +2,33 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Company, Lead, Conversation, TrackingLink, AutomationRule, ConversionEvent, LeadStatus, Source, Medium, Message, StageHistory, ConversionType } from '../types';
-import { mockCompanies, defaultStages, defaultLeads, defaultConversations, defaultRules, defaultTrackingLinks } from '../utils/mockData';
+import { defaultStages } from '../utils/mockData';
+
+const defaultCompanies: Company[] = [
+  {
+    id: 'empresa-1',
+    name: 'Minha Empresa',
+    segment: 'Geral',
+    phone: '',
+    whatsapp: '',
+    site: '',
+    averageTicket: 500,
+    currency: 'BRL',
+    timezone: 'America/Sao_Paulo',
+    integrations: {
+      whatsappConnected: false,
+      googleAdsConnected: false,
+      metaConnected: false
+    },
+    sourcesConfig: {
+      googleAds: true,
+      googleOrganico: true,
+      googlePerfil: true,
+      instagram: true,
+      facebook: true
+    }
+  }
+];
 
 interface AppContextProps {
   companies: Company[];
@@ -40,7 +66,7 @@ interface AppContextProps {
 const AppContext = createContext<AppContextProps | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [selectedCompanyId, setSelectedCompanyId] = useState<string>('sono');
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>('empresa-1');
   const [selectedPeriod, setSelectedPeriod] = useState<string>('30');
   
   // States loaded from localStorage or initialized with defaults
@@ -53,103 +79,76 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Carregar dados iniciais no cliente
   useEffect(() => {
+    // Detectar e expurgar dados mock antigos para evitar conflitos
     const localCompanies = localStorage.getItem('top_companies');
+    const hasMockData = localCompanies && (localCompanies.includes('sono') || localCompanies.includes('gs-terapias'));
+    
+    if (hasMockData) {
+      localStorage.removeItem('top_companies');
+      localStorage.removeItem('top_leads');
+      localStorage.removeItem('top_conversations');
+      localStorage.removeItem('top_links');
+      localStorage.removeItem('top_rules');
+      localStorage.removeItem('top_conversions');
+    }
+
+    const updatedCompanies = localStorage.getItem('top_companies');
     const localLeads = localStorage.getItem('top_leads');
     const localConversations = localStorage.getItem('top_conversations');
     const localLinks = localStorage.getItem('top_links');
     const localRules = localStorage.getItem('top_rules');
     const localConversions = localStorage.getItem('top_conversions');
 
-    let loadedCompanies = mockCompanies;
-    if (localCompanies) {
-      try { loadedCompanies = JSON.parse(localCompanies); } catch (e) {}
+    let loadedCompanies = defaultCompanies;
+    if (updatedCompanies) {
+      try { loadedCompanies = JSON.parse(updatedCompanies); } catch (e) {}
     } else {
-      localStorage.setItem('top_companies', JSON.stringify(mockCompanies));
+      localStorage.setItem('top_companies', JSON.stringify(defaultCompanies));
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCompanies(loadedCompanies);
 
-    let loadedLeads = defaultLeads();
+    let loadedLeads: Lead[] = [];
     if (localLeads) {
       try { loadedLeads = JSON.parse(localLeads); } catch (e) {}
     } else {
-      localStorage.setItem('top_leads', JSON.stringify(loadedLeads));
+      localStorage.setItem('top_leads', JSON.stringify([]));
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLeads(loadedLeads);
 
-    let loadedConversations = defaultConversations();
+    let loadedConversations: Conversation[] = [];
     if (localConversations) {
       try { loadedConversations = JSON.parse(localConversations); } catch (e) {}
     } else {
-      localStorage.setItem('top_conversations', JSON.stringify(loadedConversations));
+      localStorage.setItem('top_conversations', JSON.stringify([]));
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setConversations(loadedConversations);
 
-    // Links: unifica por empresa
     let loadedLinks: TrackingLink[] = [];
     if (localLinks) {
       try { loadedLinks = JSON.parse(localLinks); } catch (e) {}
     } else {
-      loadedLinks = [
-        ...defaultTrackingLinks('sono'),
-        ...defaultTrackingLinks('gs-terapias'),
-        ...defaultTrackingLinks('ls-assistencia')
-      ];
-      localStorage.setItem('top_links', JSON.stringify(loadedLinks));
+      localStorage.setItem('top_links', JSON.stringify([]));
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTrackingLinks(loadedLinks);
 
-    // Rules
-    let loadedRules = defaultRules;
+    let loadedRules: AutomationRule[] = [];
     if (localRules) {
       try { loadedRules = JSON.parse(localRules); } catch (e) {}
     } else {
-      localStorage.setItem('top_rules', JSON.stringify(defaultRules));
+      localStorage.setItem('top_rules', JSON.stringify([]));
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAutomationRules(loadedRules);
 
-    // Conversions: se não existirem, são geradas automaticamente a partir do histórico de leads
     let loadedConversions: ConversionEvent[] = [];
     if (localConversions) {
       try { loadedConversions = JSON.parse(localConversions); } catch (e) {}
     } else {
-      // Gerar a partir do histórico dos leads mockados
-      loadedLeads.forEach(lead => {
-        lead.history.forEach(hist => {
-          const stageConfig = defaultStages.find(s => s.id === hist.stageName);
-          if (stageConfig && stageConfig.isConversion && stageConfig.conversionType) {
-            // Verificar se já não criamos uma idêntica para o mesmo lead
-            const type = stageConfig.conversionType;
-            const exists = loadedConversions.some(c => c.leadId === lead.id && c.type === type);
-            if (!exists) {
-              loadedConversions.push({
-                id: `conv-${lead.id}-${type}-${Math.random().toString(36).substr(2, 4)}`,
-                leadId: lead.id,
-                leadName: lead.name,
-                type,
-                timestamp: hist.movedAt,
-                source: lead.trackingSession?.source || 'Direto',
-                campaign: lead.trackingSession?.campaign || 'Sem Campanha',
-                term: lead.trackingSession?.term,
-                value: type === 'Venda' ? lead.revenue || 650 : (type === 'Agendamento' ? 150 : 0),
-                gclid: lead.trackingSession?.gclid,
-                status: 'Pendente'
-              });
-            }
-          }
-        });
-      });
-      localStorage.setItem('top_conversions', JSON.stringify(loadedConversions));
+      localStorage.setItem('top_conversions', JSON.stringify([]));
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setConversions(loadedConversions);
   }, []);
 
-  const currentCompany = companies.find(c => c.id === selectedCompanyId) || mockCompanies[0];
+  const currentCompany = companies.find(c => c.id === selectedCompanyId) || defaultCompanies[0];
 
   // Helper para salvar estado no localStorage
   function saveState<T>(key: string, data: T): void {
@@ -496,56 +495,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.removeItem('top_rules');
     localStorage.removeItem('top_conversions');
 
-    setCompanies(mockCompanies);
-    setLeads(defaultLeads());
-    setConversations(defaultConversations());
-    setTrackingLinks([
-      ...defaultTrackingLinks('sono'),
-      ...defaultTrackingLinks('gs-terapias'),
-      ...defaultTrackingLinks('ls-assistencia')
-    ]);
-    setAutomationRules(defaultRules);
+    setCompanies(defaultCompanies);
+    setLeads([]);
+    setConversations([]);
+    setTrackingLinks([]);
+    setAutomationRules([]);
+    setConversions([]);
 
-    // Gerar conversões
-    const loadedConversationsList: ConversionEvent[] = [];
-    const loadedLeads = defaultLeads();
-    loadedLeads.forEach(lead => {
-      lead.history.forEach(hist => {
-        const stageConfig = defaultStages.find(s => s.id === hist.stageName);
-        if (stageConfig && stageConfig.isConversion && stageConfig.conversionType) {
-          const type = stageConfig.conversionType;
-          const exists = loadedConversationsList.some(c => c.leadId === lead.id && c.type === type);
-          if (!exists) {
-            loadedConversationsList.push({
-              id: `conv-${lead.id}-${type}-${Math.random().toString(36).substr(2, 4)}`,
-              leadId: lead.id,
-              leadName: lead.name,
-              type,
-              timestamp: hist.movedAt,
-              source: lead.trackingSession?.source || 'Direto',
-              campaign: lead.trackingSession?.campaign || 'Sem Campanha',
-              term: lead.trackingSession?.term,
-              value: type === 'Venda' ? lead.revenue || 650 : (type === 'Agendamento' ? 150 : 0),
-              gclid: lead.trackingSession?.gclid,
-              status: 'Pendente'
-            });
-          }
-        }
-      });
-    });
-    setConversions(loadedConversationsList);
-    
     // Save to localstorage
-    saveState('top_companies', mockCompanies);
-    saveState('top_leads', loadedLeads);
-    saveState('top_conversations', defaultConversations());
-    saveState('top_links', [
-      ...defaultTrackingLinks('sono'),
-      ...defaultTrackingLinks('gs-terapias'),
-      ...defaultTrackingLinks('ls-assistencia')
-    ]);
-    saveState('top_rules', defaultRules);
-    saveState('top_conversions', loadedConversationsList);
+    saveState('top_companies', defaultCompanies);
+    saveState('top_leads', []);
+    saveState('top_conversations', []);
+    saveState('top_links', []);
+    saveState('top_rules', []);
+    saveState('top_conversions', []);
   };
 
   return (
