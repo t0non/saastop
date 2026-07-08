@@ -8,7 +8,7 @@ import { useApp } from '@/context/AppContext';
 import { 
   LayoutDashboard, Users, Route, Link2, Kanban, RefreshCw, BarChart3, 
   Share2, Zap, MessageSquare, Settings, Menu, X, Bell, User, CheckCircle2,
-  RefreshCcw, AlertCircle, Building2, Play, LogOut, QrCode
+  RefreshCcw, AlertCircle, Building2, Play, LogOut, QrCode, Inbox, Contact
 } from 'lucide-react';
 import SimulatorDrawer from './SimulatorDrawer';
 
@@ -46,6 +46,8 @@ export default function Layout({ children }: LayoutProps) {
 
   const menuItems = [
     { name: 'Visão Geral', href: '/dashboard', icon: LayoutDashboard },
+    { name: 'Inbox WhatsApp', href: '/inbox', icon: Inbox },
+    { name: 'Contatos', href: '/contacts', icon: Contact },
     { name: 'Leads', href: '/leads', icon: Users },
     { name: 'Jornada', href: '/journeys', icon: Route },
     { name: 'Links Rastreáveis', href: '/tracking-links', icon: Link2 },

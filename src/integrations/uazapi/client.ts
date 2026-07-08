@@ -2,7 +2,8 @@ import {
   UazapiChatFindResponseSchema,
   UazapiMessageFindResponseSchema,
   UazapiSendTextResponseSchema,
-  UazapiInstanceStatusResponseSchema
+  UazapiInstanceStatusResponseSchema,
+  UazapiContactListResponseSchema
 } from "./schemas";
 
 // Helper to mask chatId/Phone for safe logging
@@ -302,6 +303,57 @@ export async function sendText(baseUrl: string, instanceToken: string, number: s
   } catch (err) {
     clearTimeout(timeoutId);
     console.error(`[UAZAPI_CLIENT_ERROR] sendText failed:`, err instanceof Error ? err.message : err);
+    throw err;
+  }
+}
+
+export async function listContacts(
+  baseUrl: string,
+  instanceToken: string,
+  limit: number,
+  offset: number,
+  contactScope: string = "all"
+) {
+  const url = `${baseUrl}/contacts/list`;
+  const startTime = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  const payload = {
+    limit,
+    offset,
+    contactScope
+  };
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "token": instanceToken
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    const duration = Date.now() - startTime;
+    logRequest("POST", url, res.status, duration, { limit, offset, contactScope });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`UAZAPI error (${res.status}): ${errText}`);
+    }
+
+    const raw = await res.json();
+    const parse = UazapiContactListResponseSchema.safeParse(raw);
+    if (!parse.success) {
+      console.warn(`[UAZAPI_CLIENT_WARN] Contact list schema validation failed:`, parse.error.format());
+      return UazapiContactListResponseSchema.parse(raw);
+    }
+    return parse.data;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.error(`[UAZAPI_CLIENT_ERROR] listContacts failed:`, err instanceof Error ? err.message : err);
     throw err;
   }
 }

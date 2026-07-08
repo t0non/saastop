@@ -1,5 +1,5 @@
-import { UazapiChat, UazapiMessage, UazapiInstanceStatusResponse } from "./schemas";
-import { NormalizedChat, NormalizedMessage, NormalizedInstanceStatus } from "./types";
+import { UazapiChat, UazapiMessage, UazapiInstanceStatusResponse, UazapiContact } from "./schemas";
+import { NormalizedChat, NormalizedMessage, NormalizedInstanceStatus, NormalizedContact } from "./types";
 
 export function normalizeUazapiChat(chat: UazapiChat): NormalizedChat {
   const chatId = chat.wa_chatid;
@@ -25,6 +25,8 @@ export function normalizeUazapiChat(chat: UazapiChat): NormalizedChat {
 
   const unreadCount = chat.wa_unreadCount || 0;
   const isGroup = !!chat.wa_isGroup;
+  const archived = !!chat.wa_archived;
+  const pinned = !!chat.wa_isPinned;
 
   return {
     chatId,
@@ -36,6 +38,8 @@ export function normalizeUazapiChat(chat: UazapiChat): NormalizedChat {
     lastMessageAt,
     unreadCount,
     isGroup,
+    archived,
+    pinned,
   };
 }
 
@@ -131,5 +135,24 @@ export function normalizeUazapiInstanceStatus(raw: UazapiInstanceStatusResponse)
     qrImageSrc,
     pairCode,
     connected: isConnected,
+  };
+}
+
+export function normalizeUazapiContact(raw: UazapiContact): NormalizedContact {
+  const jid = raw.jid || "";
+  // Extract phone from jid (e.g. 5511999999999@s.whatsapp.net)
+  let phone = "";
+  if (jid.includes("@")) {
+    phone = jid.split("@")[0].replace(/\D/g, "");
+  }
+
+  const name = raw.contact_name || raw.contact_FirstName || phone || "Sem Nome";
+  const firstName = raw.contact_FirstName || name.split(" ")[0] || "";
+
+  return {
+    jid,
+    phone,
+    name,
+    firstName,
   };
 }

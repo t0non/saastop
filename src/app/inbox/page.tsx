@@ -26,11 +26,14 @@ export default function InboxPage() {
 
   // Loading states
   const [loadingChats, setLoadingChats] = useState(true);
+  const [loadingMoreChats, setLoadingMoreChats] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const [sending, setSending] = useState(false);
 
-  // Pagination states for messages
+  // Pagination states
+  const [chatOffset, setChatOffset] = useState(0);
+  const [hasMoreChats, setHasMoreChats] = useState(true);
   const [hasMoreMessages, setHasMoreMessages] = useState(true);
   
   // Deduplication cache
@@ -54,30 +57,49 @@ export default function InboxPage() {
   }, [supabase]);
 
   // 2. Fetch list of chats from backend endpoint
-  const loadChats = async () => {
-    setLoadingChats(true);
+  const loadChats = async (append = false) => {
+    if (append) {
+      setLoadingMoreChats(true);
+    } else {
+      setLoadingChats(true);
+      setChatOffset(0);
+    }
+    const currentOffset = append ? chatOffset : 0;
     try {
-      const res = await fetch(`/api/whatsapp/chats?limit=50&offset=0`);
+      console.log(`[BOOT_05_INBOX_RENDER] Fetching chats offset=${currentOffset}`);
+      const res = await fetch(`/api/whatsapp/chats?limit=50&offset=${currentOffset}`);
       const data = await res.json();
       if (res.ok && data.status === "success") {
-        setChats(data.chats || []);
+        const newChats = data.chats || [];
+        if (append) {
+          setChats(prev => [...prev, ...newChats]);
+        } else {
+          setChats(newChats);
+        }
+        setHasMoreChats(newChats.length === 50);
+        setChatOffset(currentOffset + newChats.length);
+
         // Also fetch connection state from status endpoint
-        const statusRes = await fetch("/api/whatsapp/status");
-        if (statusRes.ok) {
-          const statusData = await statusRes.json();
-          setWhatsappStatus(statusData.status || "disconnected");
+        if (!append) {
+          const statusRes = await fetch("/api/whatsapp/status");
+          if (statusRes.ok) {
+            const statusData = await statusRes.json();
+            setWhatsappStatus(statusData.status || "disconnected");
+          }
         }
       } else {
         if (data.code === "PROVIDER_OFFLINE") {
           setWhatsappStatus("disconnected");
         }
-        setChats([]);
+        if (!append) setChats([]);
+        setHasMoreChats(false);
       }
     } catch (err) {
       console.error("Error loading chats:", err);
-      setWhatsappStatus("error");
+      if (!append) setWhatsappStatus("error");
     } finally {
       setLoadingChats(false);
+      setLoadingMoreChats(false);
     }
   };
 
@@ -133,7 +155,9 @@ export default function InboxPage() {
                 lastMessagePreview: "Nova conversa iniciada pelo CRM",
                 lastMessageAt: new Date().toISOString(),
                 unreadCount: 0,
-                isGroup: false
+                isGroup: false,
+                archived: false,
+                pinned: false
               };
               return [newChat, ...prev];
             });
@@ -297,7 +321,9 @@ export default function InboxPage() {
               lastMessagePreview: payload.text || `[Mensagem]`,
               lastMessageAt: payload.timestamp,
               unreadCount: shouldIncrementUnread ? 1 : 0,
-              isGroup: false
+              isGroup: false,
+              archived: false,
+              pinned: false
             };
             return [newChat, ...prevChats];
           }
@@ -497,11 +523,36 @@ export default function InboxPage() {
                   </div>
                 );
               })
+            ) : whatsappStatus !== "connected" ? (
+              <div className="p-6 text-center text-slate-400 space-y-2">
+                <AlertCircle className="h-8 w-8 text-slate-300 mx-auto" />
+                <p className="text-xs font-semibold">Conecte um WhatsApp</p>
+                <p className="text-[10px] leading-relaxed">Para visualizar suas conversas, conecte um número na página de Integrações.</p>
+              </div>
             ) : (
               <div className="p-6 text-center text-slate-400 space-y-1">
                 <AlertCircle className="h-6 w-6 text-slate-350 mx-auto" />
-                <p className="text-xs font-semibold">Nenhum chat disponível</p>
-                <p className="text-[10px]">As conversas do WhatsApp aparecerão aqui.</p>
+                <p className="text-xs font-semibold">Nenhum chat encontrado</p>
+                <p className="text-[10px]">Nenhuma conversa foi encontrada na conta conectada.</p>
+              </div>
+            )}
+
+            {/* Load more chats button */}
+            {hasMoreChats && !loadingChats && filteredChats.length > 0 && (
+              <div className="p-3 border-t border-slate-200">
+                <button
+                  onClick={() => loadChats(true)}
+                  disabled={loadingMoreChats}
+                  className="w-full text-xs text-emerald-600 hover:text-emerald-700 font-semibold py-2 px-3 rounded-lg hover:bg-emerald-50 transition disabled:opacity-50"
+                >
+                  {loadingMoreChats ? (
+                    <span className="flex items-center justify-center gap-1.5">
+                      <Loader2 className="h-3 w-3 animate-spin" /> Carregando...
+                    </span>
+                  ) : (
+                    "Carregar mais conversas"
+                  )}
+                </button>
               </div>
             )}
           </div>

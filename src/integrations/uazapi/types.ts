@@ -8,6 +8,8 @@ export interface NormalizedChat {
   lastMessageAt: string; // ISO string
   unreadCount: number;
   isGroup: boolean;
+  archived: boolean;
+  pinned: boolean;
 }
 
 export interface NormalizedMessage {
@@ -22,6 +24,13 @@ export interface NormalizedMessage {
   mediaUrl: string;
 }
 
+export interface NormalizedContact {
+  jid: string;
+  phone: string;
+  name: string;
+  firstName: string;
+}
+
 export interface NormalizedInstanceStatus {
   status: "disconnected" | "connecting" | "connected" | "hibernated" | "waiting_qr" | "waiting_pair_code";
   instanceName: string | null;
@@ -30,3 +39,4 @@ export interface NormalizedInstanceStatus {
   pairCode: string | null;
   connected: boolean;
 }
+

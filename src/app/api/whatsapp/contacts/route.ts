@@ -1,22 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerClient } from "@/lib/supabaseServer";
-import { findMessages } from "@/integrations/uazapi/client";
-import { normalizeUazapiMessage } from "@/integrations/uazapi/normalizers";
+import { listContacts } from "@/integrations/uazapi/client";
+import { normalizeUazapiContact } from "@/integrations/uazapi/normalizers";
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ chatId: string }> }
-) {
+export async function GET(request: NextRequest) {
   try {
-    // 1. Resolve dynamic params (params is a promise in Next.js 15+)
-    const { chatId } = await params;
-    const decodedChatId = decodeURIComponent(chatId);
-
-    if (!decodedChatId) {
-      return NextResponse.json({ error: "Missing chatId parameter" }, { status: 400 });
-    }
-
-    // 2. Authenticate user
+    // 1. Authenticate user
     const supabase = await getServerClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
@@ -24,13 +13,15 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 3. Resolve organization_id dynamically
+    // 2. Resolve organization_id dynamically
     const organizationId = user.user_metadata?.organization_id || user.app_metadata?.organization_id;
     if (!organizationId) {
       return NextResponse.json({ error: "No organization found" }, { status: 403 });
     }
 
-    // 4. Get WhatsApp Connection
+    console.log(`[CONTACTS_01_REQUEST] org=${organizationId}`);
+
+    // 3. Get WhatsApp Connection
     const { data: connection, error: connError } = await supabase
       .from("whatsapp_connections")
       .select("*")
@@ -38,23 +29,24 @@ export async function GET(
       .maybeSingle();
 
     if (connError) {
-      console.error("[MESSAGES_ROUTE] Database connection lookup error:", connError);
+      console.error("[CONTACTS_ROUTE] Database connection lookup error:", connError);
       return NextResponse.json({ error: "Database error" }, { status: 500 });
     }
 
     if (!connection) {
-      return NextResponse.json({ status: "not_configured", messages: [] });
+      return NextResponse.json({ status: "not_configured", contacts: [] });
     }
 
     if (connection.status !== "connected") {
-      return NextResponse.json({ status: "disconnected", messages: [] });
+      return NextResponse.json({ status: "disconnected", contacts: [] });
     }
 
     const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get("limit") || "50", 10);
+    const limit = parseInt(searchParams.get("limit") || "100", 10);
     const offset = parseInt(searchParams.get("offset") || "0", 10);
+    const scope = searchParams.get("scope") || "all";
 
-    // 5. Fetch messages from UAZAPI
+    // 4. Fetch contacts from UAZAPI
     const baseUrl = connection.base_url || "https://free.uazapi.com";
     const instanceToken = connection.instance_token;
 
@@ -63,25 +55,30 @@ export async function GET(
     }
 
     try {
-      const data = await findMessages(baseUrl, instanceToken, decodedChatId, limit, offset);
-      const normalizedMessages = (data.messages || []).map(normalizeUazapiMessage);
+      console.log(`[CONTACTS_02_PROVIDER_REQUEST] limit=${limit} offset=${offset} scope=${scope}`);
+      const data = await listContacts(baseUrl, instanceToken, limit, offset, scope);
+      const normalizedContacts = (data.contacts || []).map(normalizeUazapiContact);
+
+      console.log(`[CONTACTS_03_NORMALIZED] count=${normalizedContacts.length} totalDevice=${data.totalDeviceContacts || "N/A"}`);
 
       return NextResponse.json({
         status: "success",
-        messages: normalizedMessages,
-        hasMore: data.hasMore ?? (normalizedMessages.length === limit)
+        contacts: normalizedContacts,
+        totalDeviceContacts: data.totalDeviceContacts,
+        pagination: data.pagination || null,
+        hasMore: normalizedContacts.length === limit
       });
     } catch (apiErr) {
-      console.error("[MESSAGES_ROUTE] UAZAPI fetch failed:", apiErr);
+      console.error("[CONTACTS_ROUTE] UAZAPI fetch failed:", apiErr);
       return NextResponse.json({
         status: "error",
         code: "PROVIDER_OFFLINE",
-        message: "Falha ao carregar histórico de mensagens da UAZAPI."
+        message: "Falha ao conectar com o servidor da UAZAPI."
       }, { status: 502 });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[MESSAGES_ROUTE] Unhandled error:", msg);
+    console.error("[CONTACTS_ROUTE] Unhandled error:", msg);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

@@ -112,6 +112,24 @@ export const UazapiWebhookSchema = z.object({
   token: z.string().optional().nullable(),
 }).passthrough();
 
+// Contact Schema from OpenAPI (GET /contacts and POST /contacts/list)
+export const UazapiContactSchema = z.object({
+  jid: z.string(),
+  contact_name: z.string().optional().nullable(),
+  contact_FirstName: z.string().optional().nullable(),
+}).passthrough();
+
+// Response of POST /contacts/list
+export const UazapiContactListResponseSchema = z.object({
+  contacts: z.array(UazapiContactSchema),
+  totalDeviceContacts: z.number().optional(),
+  pagination: z.object({
+    totalRecords: z.number().optional(),
+    limit: z.number().optional(),
+    offset: z.number().optional(),
+  }).optional().nullable(),
+}).passthrough();
+
 export type UazapiChat = z.infer<typeof UazapiChatSchema>;
 export type UazapiMessage = z.infer<typeof UazapiMessageSchema>;
 export type UazapiChatFindResponse = z.infer<typeof UazapiChatFindResponseSchema>;
@@ -120,3 +138,6 @@ export type UazapiSendTextResponse = z.infer<typeof UazapiSendTextResponseSchema
 export type UazapiInstance = z.infer<typeof UazapiInstanceSchema>;
 export type UazapiInstanceStatusResponse = z.infer<typeof UazapiInstanceStatusResponseSchema>;
 export type UazapiWebhookPayload = z.infer<typeof UazapiWebhookSchema>;
+export type UazapiContact = z.infer<typeof UazapiContactSchema>;
+export type UazapiContactListResponse = z.infer<typeof UazapiContactListResponseSchema>;
+

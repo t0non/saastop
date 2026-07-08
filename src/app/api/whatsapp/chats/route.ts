@@ -14,7 +14,10 @@ export async function GET(request: NextRequest) {
     }
 
     // 2. Resolve organization_id dynamically
-    const organizationId = user.user_metadata?.organization_id || user.app_metadata?.organization_id || "empresa-1";
+    const organizationId = user.user_metadata?.organization_id || user.app_metadata?.organization_id;
+    if (!organizationId) {
+      return NextResponse.json({ error: "No organization found" }, { status: 403 });
+    }
 
     // 3. Get WhatsApp Connection
     const { data: connection, error: connError } = await supabase
@@ -31,6 +34,8 @@ export async function GET(request: NextRequest) {
     if (!connection) {
       return NextResponse.json({ status: "not_configured", chats: [] });
     }
+
+    console.log(`[BOOT_01_CONNECTION_RESOLVED] org=${organizationId} instance=${connection.instance_name} status=${connection.status}`);
 
     // If connection status is disconnected, we return provider offline / disconnected
     if (connection.status !== "connected") {
@@ -50,8 +55,11 @@ export async function GET(request: NextRequest) {
     }
 
     try {
+      console.log(`[BOOT_02_CHAT_FIND_REQUEST] limit=${limit} offset=${offset}`);
       const data = await findChats(baseUrl, instanceToken, limit, offset);
+      console.log(`[BOOT_03_CHAT_FIND_SUCCESS] rawChatsCount=${(data.chats || []).length}`);
       const normalizedChats = (data.chats || []).map(normalizeUazapiChat);
+      console.log(`[BOOT_04_CHATS_NORMALIZED] normalizedCount=${normalizedChats.length}`);
 
       return NextResponse.json({
         status: "success",
