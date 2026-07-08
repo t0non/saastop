@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Company, Lead, Conversation, TrackingLink, AutomationRule, ConversionEvent, LeadStatus, Source, Medium, Message, StageHistory, ConversionType } from '../types';
+import { Company, Lead, Conversation, TrackingLink, AutomationRule, ConversionEvent, LeadStatus, Source, Medium, Message, StageHistory, ConversionType, MessageDirection } from '../types';
 import { defaultStages } from '../utils/mockData';
 
 const defaultCompanies: Company[] = [
@@ -152,7 +152,125 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setConversions(loadedConversions);
-  }, []);
+
+    // Sincronizar com o banco de dados real do Supabase
+    async function syncWithSupabase() {
+      try {
+        const { getBrowserClient, isSupabaseConfigured } = await import("../lib/supabase");
+        if (!isSupabaseConfigured) return;
+
+        const supabaseClient = getBrowserClient();
+        
+        interface DbLeadRow {
+          id: string;
+          organization_id: string;
+          created_at: string;
+          pipeline_stage_id: string;
+          revenue?: number;
+          value?: number;
+          temperature?: 'Frio' | 'Morno' | 'Quente';
+          contact_id: string;
+          contact?: {
+            name: string;
+            phone_normalized: string;
+          };
+        }
+
+        interface DbMessageRow {
+          id: string;
+          body: string;
+          direction: string;
+          sent_at: string;
+        }
+
+        interface DbConversationRow {
+          id: string;
+          contact_id: string;
+          unread_count: number;
+          messages?: DbMessageRow[];
+        }
+
+        // Buscar leads cadastrados
+        const { data: rawLeads, error: leadsErr } = await supabaseClient
+          .from("leads")
+          .select("*, contact:contacts(*)")
+          .eq("organization_id", selectedCompanyId);
+
+        if (leadsErr) {
+          console.warn("Could not load leads from Supabase:", leadsErr.message);
+          return;
+        }
+
+        if (!rawLeads) return;
+
+        const dbLeads = rawLeads as unknown as DbLeadRow[];
+
+        const mappedLeads: Lead[] = dbLeads.map((item: DbLeadRow) => ({
+          id: item.id,
+          companyId: item.organization_id,
+          name: item.contact?.name || "Desconhecido",
+          phone: item.contact?.phone_normalized || "",
+          createdAt: item.created_at,
+          stage: item.pipeline_stage_id as LeadStatus,
+          currentAssignedTo: "Sem atendente",
+          revenue: Number(item.revenue || 0),
+          value: Number(item.value || 0),
+          temperature: item.temperature || "Morno",
+          history: [
+            {
+              id: `hist-${item.id}`,
+              stageName: item.pipeline_stage_id as LeadStatus,
+              movedAt: item.created_at,
+              reason: "Lead criado via WhatsApp",
+              source: "system",
+            }
+          ]
+        }));
+
+        // Buscar conversas e mensagens
+        const { data: rawConvs, error: convsErr } = await supabaseClient
+          .from("conversations")
+          .select("*, contact:contacts(*), messages(*)")
+          .eq("organization_id", selectedCompanyId);
+
+        if (convsErr) {
+          console.warn("Could not load conversations from Supabase:", convsErr.message);
+          return;
+        }
+
+        const dbConversations = rawConvs as unknown as DbConversationRow[];
+
+        const mappedConvs: Conversation[] = dbConversations.map((item: DbConversationRow) => {
+          const lead = dbLeads.find(l => l.contact_id === item.contact_id);
+          const leadId = lead ? lead.id : item.contact_id;
+
+          const messages = (item.messages || [])
+            .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime())
+            .map((m) => ({
+              id: m.id,
+              text: m.body,
+              direction: m.direction as MessageDirection,
+              timestamp: m.sent_at,
+            }));
+
+          return {
+            leadId,
+            messages,
+            unreadCount: item.unread_count || 0,
+          };
+        });
+
+        setLeads(mappedLeads);
+        setConversations(mappedConvs);
+        localStorage.setItem("top_leads", JSON.stringify(mappedLeads));
+        localStorage.setItem("top_conversations", JSON.stringify(mappedConvs));
+      } catch (err) {
+        console.error("Error syncing with Supabase:", err);
+      }
+    }
+
+    syncWithSupabase();
+  }, [selectedCompanyId]);
 
   const currentCompany = companies.find(c => c.id === selectedCompanyId) || defaultCompanies[0];
 
@@ -215,6 +333,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setLeads(updatedLeads);
     saveState('top_leads', updatedLeads);
+
+    // Sincronizar mudança de etapa comercial no Supabase
+    async function syncLeadMove() {
+      try {
+        const { getBrowserClient, isSupabaseConfigured } = await import("../lib/supabase");
+        if (!isSupabaseConfigured) return;
+
+        const supabaseClient = getBrowserClient();
+        const targetLead = updatedLeads.find(l => l.id === leadId);
+        if (!targetLead) return;
+
+        await supabaseClient
+          .from("leads")
+          .update({
+            pipeline_stage_id: targetLead.stage,
+            revenue: targetLead.revenue,
+            value: targetLead.value,
+            temperature: targetLead.temperature,
+            updated_at: now,
+          })
+          .eq("id", leadId);
+      } catch (err) {
+        console.error("Error syncing lead move to Supabase:", err);
+      }
+    }
+    syncLeadMove();
 
     // Gerar evento de conversão se a etapa de destino for marcada como conversão
     const stageConfig = defaultStages.find(s => s.id === targetStage);
@@ -284,6 +428,81 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setConversations(finalConversations);
     saveState('top_conversations', finalConversations);
+
+    // Sincronizar mensagens outbound/manuais enviadas pelo painel no Supabase
+    async function syncOutboundMessage() {
+      try {
+        const { getBrowserClient, isSupabaseConfigured } = await import("../lib/supabase");
+        if (!isSupabaseConfigured) return;
+
+        const supabaseClient = getBrowserClient();
+        
+        // Obter informações do lead para saber o contact_id e conversation_id
+        const { data: dbLead, error: leadErr } = await supabaseClient
+          .from("leads")
+          .select("*, contact:contacts(*)")
+          .eq("id", leadId)
+          .maybeSingle();
+
+        if (leadErr || !dbLead) {
+          console.warn("Could not find lead in Supabase for message sync:", leadErr);
+          return;
+        }
+
+        const contactId = dbLead.contact_id;
+
+        // Buscar conversa associada
+        const { data: dbConv, error: convErr } = await supabaseClient
+          .from("conversations")
+          .select("id")
+          .eq("contact_id", contactId)
+          .maybeSingle();
+
+        if (convErr || !dbConv) {
+          console.warn("Could not find conversation in Supabase for message sync:", convErr);
+          return;
+        }
+
+        // Criar mensagem
+        const providerMessageId = `manual-${newMessage.id}`;
+        const { error: msgErr } = await supabaseClient
+          .from("messages")
+          .insert([
+            {
+              organization_id: selectedCompanyId,
+              conversation_id: dbConv.id,
+              contact_id: contactId,
+              provider: "uazapi",
+              provider_message_id: providerMessageId,
+              direction: direction,
+              message_type: "text",
+              body: text,
+              status: "sent",
+              sent_at: now,
+            }
+          ]);
+
+        if (msgErr) {
+          console.error("Error saving manual message to Supabase:", msgErr);
+        } else {
+          // Atualizar preview da conversa
+          await supabaseClient
+            .from("conversations")
+            .update({
+              last_message_at: now,
+              last_message_preview: text.length > 100 ? text.substring(0, 100) + "..." : text,
+              updated_at: now,
+            })
+            .eq("id", dbConv.id);
+        }
+      } catch (err) {
+        console.error("Error syncing outbound message to Supabase:", err);
+      }
+    }
+
+    if (direction === "outbound") {
+      syncOutboundMessage();
+    }
 
     // Processar regras de automação
     // Buscamos apenas as regras ativas associadas à empresa selecionada
