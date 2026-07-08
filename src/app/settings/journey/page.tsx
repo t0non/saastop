@@ -192,7 +192,7 @@ export default function JourneySettingsPage() {
     setLoading(true);
     try {
       const supabase = getBrowserClient();
-      const stageId = editingStage ? editingStage.id : `stage-${Math.random().toString(36).substr(2, 9)}`;
+      const stageId = editingStage ? editingStage.id : (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `stage-${Math.random().toString(36).substr(2, 9)}`);
 
       // 1. Verify representsFirstContact uniqueness
       if (representsFirstContact) {

@@ -113,7 +113,10 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const errObj = err as Record<string, unknown>;
+    const msg = typeof err === "object" && err !== null
+      ? String(errObj.message || errObj.details || JSON.stringify(err))
+      : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
